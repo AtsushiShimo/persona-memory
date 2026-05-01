@@ -12,13 +12,13 @@
 
 SCRIPT_HOME="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 export SCRIPT_HOME
-PYTHON="$SCRIPT_HOME/.venv/bin/python"
 SCRIPT="$SCRIPT_HOME/scripts/auto_persist.py"
 
-[ -x "$PYTHON" ] || exit 0
 [ -f "$SCRIPT" ] || exit 0
 
 # shellcheck disable=SC1091
 . "$SCRIPT_HOME/scripts/load_persona_env.sh"
 
-exec "$PYTHON" "$SCRIPT"
+[ -x "${PERSONA_PYTHON:-}" ] || exit 0
+
+exec "$PERSONA_PYTHON" "$SCRIPT"

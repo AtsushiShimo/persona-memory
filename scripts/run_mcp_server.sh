@@ -22,11 +22,10 @@ export SCRIPT_HOME
 # shellcheck disable=SC1091
 . "$SCRIPT_HOME/scripts/load_persona_env.sh"
 
-PYTHON="$SCRIPT_HOME/.venv/bin/python"
-if [ ! -x "$PYTHON" ]; then
-  echo "persona-memory: $PYTHON not found. Run /persona-memory:init first." >&2
+if [ ! -x "${PERSONA_PYTHON:-}" ]; then
+  echo "persona-memory: python venv not found. Run /persona-memory:init first." >&2
   exit 1
 fi
 
 cd "$SCRIPT_HOME"
-exec "$PYTHON" -m server.main
+exec "$PERSONA_PYTHON" -m server.main

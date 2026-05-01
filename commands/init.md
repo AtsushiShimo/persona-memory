@@ -183,7 +183,10 @@ HEAVY="gemma3:12b"
 EMBED="nomic-embed-text"
 
 # 1. venv + Ollama モデル + DB 初期化
-PERSONA_LIGHT_MODEL="$LIGHT" PERSONA_HEAVY_MODEL="$HEAVY" \
+#    setup.sh は CLAUDE_PLUGIN_DATA があれば $DATA_DIR/.venv に venv を作る
+#    (plugin version bump で cache が消えても venv は残る設計)
+CLAUDE_PLUGIN_DATA="$DATA_DIR" \
+  PERSONA_LIGHT_MODEL="$LIGHT" PERSONA_HEAVY_MODEL="$HEAVY" \
   PERSONA_JUDGE_MODEL="$LIGHT" \
   bash "$PLUGIN_ROOT/setup.sh" "$NAME"
 
@@ -200,9 +203,9 @@ EOF
 # 3. このペルソナをアクティブに
 echo "$NAME" > "$DATA_DIR/active-persona"
 
-# 4. persona facts を seed
+# 4. persona facts を seed (venv は永続データ側にある)
 PERSONA_MEMORY_DB="$DATA_DIR/$NAME.db" \
-  "$PLUGIN_ROOT/.venv/bin/python" "$PLUGIN_ROOT/scripts/seed_persona.py" \
+  "$DATA_DIR/.venv/bin/python" "$PLUGIN_ROOT/scripts/seed_persona.py" \
   --name "$NAME" \
   --role "<Q1>" --gender "<Q2>" --personality "<Q3>" \
   --first-person "<Q5>" --speech-style "<Q6>" \

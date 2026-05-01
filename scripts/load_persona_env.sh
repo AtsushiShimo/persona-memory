@@ -114,3 +114,13 @@ export PERSONA_EMBED_MODEL
 export OLLAMA_HOST
 export PERSONA_JUDGE_MODEL
 export PERSONA_RECALL_COMPRESS_MODEL
+
+# Resolve which python to use. Prefer the persistent .venv inside
+# CLAUDE_PLUGIN_DATA (created by /persona-memory:init via setup.sh) so plugin
+# version bumps that wipe SCRIPT_HOME's cache tree don't break the install.
+# Falls back to SCRIPT_HOME/.venv for legacy / standalone setups.
+if [ -n "${_PERSONA_DATA_DIR:-}" ] && [ -x "$_PERSONA_DATA_DIR/.venv/bin/python" ]; then
+  export PERSONA_PYTHON="$_PERSONA_DATA_DIR/.venv/bin/python"
+elif [ -x "$SCRIPT_HOME/.venv/bin/python" ]; then
+  export PERSONA_PYTHON="$SCRIPT_HOME/.venv/bin/python"
+fi

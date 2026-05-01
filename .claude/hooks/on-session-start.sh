@@ -23,7 +23,7 @@ cd "$SCRIPT_HOME" || exit 0
 DB_PATH="$PERSONA_MEMORY_DB"
 SQLITE="/opt/homebrew/opt/sqlite/bin/sqlite3"
 [ -x "$SQLITE" ] || SQLITE="sqlite3"
-PYTHON="$SCRIPT_HOME/.venv/bin/python"
+PYTHON="${PERSONA_PYTHON:-}"
 
 if [ ! -f "$DB_PATH" ]; then
   printf 'persona-memory DB not initialized yet at %s — run setup.sh first.\n' "$DB_PATH"
