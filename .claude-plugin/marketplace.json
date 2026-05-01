@@ -9,7 +9,7 @@
       "description": "Local-first persistent memory for Claude Code agents — per-persona SQLite + sqlite-vec store with Ollama-driven write-side capture and read-side compression. Survives /clear and session restarts.",
       "source": {
         "source": "url",
-        "url": "https://github.com/AtsushiShimo/persona-memory.git"
+        "url": "git@github.com:AtsushiShimo/persona-memory.git"
       }
     }
   ]
