@@ -148,9 +148,13 @@ fi
 
 # Persist a "session started" episode so the boundary itself is in the DB
 # (auto_persist only fires after assistant turns and skips system messages).
-PERSONA_COUNT=$(printf '%s\n' "$PERSONA"        | grep -c .)
-CONTEXT_COUNT=$(printf '%s\n' "$RECENT_CONTEXT" | grep -c .)
-EPISODE_COUNT=$(printf '%s\n' "$RECENT_EPISODES"| grep -c .)
+# NOTE: `grep -c .` exits 1 when input is empty. Combined with `set -e`
+# at top of file, that would silently kill the whole hook on a fresh DB
+# (no context facts / episodes yet). `|| true` keeps the captured value
+# ("0") while suppressing the non-zero exit.
+PERSONA_COUNT=$(printf '%s\n' "$PERSONA"        | grep -c . || true)
+CONTEXT_COUNT=$(printf '%s\n' "$RECENT_CONTEXT" | grep -c . || true)
+EPISODE_COUNT=$(printf '%s\n' "$RECENT_EPISODES"| grep -c . || true)
 TOPIC_HINT=$(printf '%s\n' "$RECENT_EPISODES" | head -3 | awk -F'|' '{
   s = $2; gsub(/[\r\n]+/, " ", s); print substr(s, 1, 90)
 }' | paste -sd '; ' -)
