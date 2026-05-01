@@ -1,0 +1,20 @@
+{
+  "name": "persona-memory",
+  "version": "0.1.0",
+  "description": "Local-first persistent memory for Claude Code agents — per-persona SQLite + sqlite-vec store with Ollama-driven write-side capture and read-side compression. Survives /clear and session restarts.",
+  "author": {
+    "name": "persona-memory contributors"
+  },
+  "keywords": [
+    "memory",
+    "persona",
+    "ollama",
+    "sqlite",
+    "mcp"
+  ],
+  "mcpServers": {
+    "persona-memory": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/run_mcp_server.sh"
+    }
+  }
+}

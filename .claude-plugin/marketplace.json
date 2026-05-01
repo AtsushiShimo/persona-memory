@@ -1,0 +1,16 @@
+{
+  "name": "persona-memory",
+  "owner": {
+    "name": "AtsushiShimo"
+  },
+  "plugins": [
+    {
+      "name": "persona-memory",
+      "description": "Local-first persistent memory for Claude Code agents — per-persona SQLite + sqlite-vec store with Ollama-driven write-side capture and read-side compression. Survives /clear and session restarts.",
+      "source": {
+        "source": "github",
+        "repo": "AtsushiShimo/persona-memory"
+      }
+    }
+  ]
+}

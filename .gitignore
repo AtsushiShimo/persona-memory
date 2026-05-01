@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+*.db
+*.db-wal
+*.db-shm
+*.log
+.DS_Store
+.env
+
+# Generated per-host / per-persona — never commit
+.mcp.json
+.claude/settings.local.json
+data/

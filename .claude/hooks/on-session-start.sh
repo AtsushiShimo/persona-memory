@@ -1,0 +1,164 @@
+#!/bin/sh
+# SessionStart hook for persona-memory.
+# Injects:
+#   1. 'persona' category facts (= 性格 / 対話スタイル / 振る舞いルール) — always
+#   2. Recent active 'context' facts (importance >= 4)             — NEW
+#   3. Latest N episode summaries                                  — NEW
+# Items 2-3 give the agent immediate awareness of "what we worked on recently"
+# without waiting for the user's first prompt to trigger proxy recall.
+# Other categories (preference / rule / profile / skill) stay on dynamic
+# recall via the UserPromptSubmit hook to keep startup tokens reasonable.
+
+set -e
+
+# Resolve the plugin root (or repo root when running standalone). All script
+# paths are relative to this so the hook works in either form.
+SCRIPT_HOME="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+export SCRIPT_HOME
+cd "$SCRIPT_HOME" || exit 0
+
+# shellcheck disable=SC1091
+. "$SCRIPT_HOME/scripts/load_persona_env.sh"
+
+DB_PATH="$PERSONA_MEMORY_DB"
+SQLITE="/opt/homebrew/opt/sqlite/bin/sqlite3"
+[ -x "$SQLITE" ] || SQLITE="sqlite3"
+PYTHON="$SCRIPT_HOME/.venv/bin/python"
+
+if [ ! -f "$DB_PATH" ]; then
+  printf 'persona-memory DB not initialized yet at %s — run setup.sh first.\n' "$DB_PATH"
+  exit 0
+fi
+
+PERSONA=$("$SQLITE" "$DB_PATH" <<'SQL' 2>/dev/null
+.mode list
+.separator "|"
+SELECT key, value, importance, updated_at
+FROM facts
+WHERE status = 'active' AND category = 'persona'
+ORDER BY importance DESC, updated_at DESC
+LIMIT 30;
+SQL
+)
+
+CONFLICTS=$("$SQLITE" "$DB_PATH" <<'SQL' 2>/dev/null
+.mode list
+.separator "|"
+SELECT c.confidence,
+       fa.category || '/' || fa.key,
+       fa.value,
+       fb.value
+FROM conflicts c
+JOIN facts fa ON fa.id = c.fact_a_id
+JOIN facts fb ON fb.id = c.fact_b_id
+WHERE c.resolution = 'pending'
+ORDER BY c.detected_at DESC
+LIMIT 5;
+SQL
+)
+
+# Recent project state — active 'context' facts with non-trivial importance.
+RECENT_CONTEXT=$("$SQLITE" "$DB_PATH" <<'SQL' 2>/dev/null
+.mode list
+.separator "|"
+SELECT key, importance, updated_at, substr(value, 1, 200)
+FROM facts
+WHERE status = 'active' AND category = 'context' AND importance >= 4
+ORDER BY updated_at DESC
+LIMIT 5;
+SQL
+)
+
+# Recent episodes — what was discussed/decided recently.
+# Exclude session-start markers (auto-generated boundary records) so genuine
+# work summaries aren't pushed out by repeated restarts.
+RECENT_EPISODES=$("$SQLITE" "$DB_PATH" <<'SQL' 2>/dev/null
+.mode list
+.separator "|"
+SELECT created_at, substr(summary, 1, 240)
+FROM episodes
+WHERE summary IS NOT NULL AND summary != ''
+  AND summary NOT LIKE 'Session started at%'
+ORDER BY created_at DESC
+LIMIT 5;
+SQL
+)
+
+# Generate a session-start greeting using the judge model.
+# Piped from RECENT_EPISODES so no extra DB query; fail-open (empty = skip).
+GREETING=""
+GEN_SCRIPT="$REPO_ROOT/scripts/gen_greeting.py"
+if [ -n "$RECENT_EPISODES" ] && [ -x "$PYTHON" ] && [ -f "$GEN_SCRIPT" ]; then
+  EPISODE_TEXT=$(printf '%s\n' "$RECENT_EPISODES" | awk -F'|' '{print $1 ": " $2}')
+  # gen_greeting reads PERSONA_LIGHT_MODEL via PERSONA_JUDGE_MODEL alias
+  # (set by load_persona_env.sh). It's a quick one-liner generation, so
+  # the light model is appropriate even though greeting is read-side.
+  GREETING=$(printf '%s\n' "$EPISODE_TEXT" | \
+    "$PYTHON" "$GEN_SCRIPT" 2>/dev/null || true)
+fi
+
+{
+  printf '=== persona-memory: 起動時人格注入 (%s) ===\n' "$(date '+%Y-%m-%d %H:%M')"
+  printf 'DB: %s\n\n' "$DB_PATH"
+
+  if [ -z "$PERSONA" ]; then
+    printf 'まだ persona (性格・対話スタイル) facts は登録されていません。\n'
+    printf '会話の中でユーザーから振る舞いに関する指示があれば、確認なしで\n'
+    printf 'write_fact(category="persona", ...) で記録してください。\n'
+  else
+    printf '## persona (性格・対話スタイル)\n\n'
+    printf '%s\n' "$PERSONA" | awk -F'|' '{
+      printf "- [persona/%s] (importance=%s, updated=%s)\n  %s\n", $1, $3, $4, $2
+    }'
+  fi
+
+  if [ -n "$CONFLICTS" ]; then
+    printf '\n## 未解決の矛盾 (要確認)\n\n'
+    printf '%s\n' "$CONFLICTS" | awk -F'|' '{
+      printf "- [confidence=%s] %s\n  A: %s\n  B: %s\n", $1, $2, $3, $4
+    }'
+  fi
+
+  if [ -n "$RECENT_CONTEXT" ]; then
+    printf '\n## 直近のプロジェクト状況 (context facts)\n\n'
+    printf '%s\n' "$RECENT_CONTEXT" | awk -F'|' '{
+      printf "- [context/%s] (importance=%s, updated=%s)\n  %s\n", $1, $2, $3, $4
+    }'
+  fi
+
+  if [ -n "$RECENT_EPISODES" ]; then
+    printf '\n## 直近の議論ログ (recent episodes)\n\n'
+    printf '%s\n' "$RECENT_EPISODES" | awk -F'|' '{
+      printf "- [%s] %s\n", $1, $2
+    }'
+  fi
+
+  if [ -n "$GREETING" ]; then
+    printf '\n## 起動挨拶\n'
+    printf '最初のユーザー発話への返答の冒頭に、以下の一文を自然に含めてください:\n'
+    printf '%s\n' "$GREETING"
+  fi
+
+  printf '\n## 行動指針\n'
+  printf 'persona 以外の関連記憶は UserPromptSubmit 時に proxy が自動付与します。\n'
+  printf 'search_memory を明示呼び出しするのは proxy が拾えない深掘りが必要なときだけ。\n'
+  printf '会話で出てきた preference/rule/profile/skill/context/persona は確認なしで write_fact してください。\n'
+  printf '振る舞い指示 (例: "確認時は根拠と選択肢を出して") は category="persona" で書いてください。\n'
+} 2>&1
+
+# Persist a "session started" episode so the boundary itself is in the DB
+# (auto_persist only fires after assistant turns and skips system messages).
+PERSONA_COUNT=$(printf '%s\n' "$PERSONA"        | grep -c .)
+CONTEXT_COUNT=$(printf '%s\n' "$RECENT_CONTEXT" | grep -c .)
+EPISODE_COUNT=$(printf '%s\n' "$RECENT_EPISODES"| grep -c .)
+TOPIC_HINT=$(printf '%s\n' "$RECENT_EPISODES" | head -3 | awk -F'|' '{
+  s = $2; gsub(/[\r\n]+/, " ", s); print substr(s, 1, 90)
+}' | paste -sd '; ' -)
+SUMMARY_LINE=$(printf 'Session started at %s. Injected: persona=%s, context=%s, episodes=%s. Recent topics: %s' \
+  "$(date '+%Y-%m-%d %H:%M')" "$PERSONA_COUNT" "$CONTEXT_COUNT" "$EPISODE_COUNT" "$TOPIC_HINT")
+
+LOGGER="$SCRIPT_HOME/scripts/log_session_start.py"
+if [ -x "$PYTHON" ] && [ -f "$LOGGER" ]; then
+  # All env vars are already exported by load_persona_env.sh.
+  printf '%s\n' "$SUMMARY_LINE" | "$PYTHON" "$LOGGER" >/dev/null 2>&1 &
+fi
