@@ -141,7 +141,10 @@ fi
 
   printf '\n## 行動指針\n'
   printf 'persona 以外の関連記憶は UserPromptSubmit 時に proxy が自動付与します。\n'
-  printf 'search_memory を明示呼び出しするのは proxy が拾えない深掘りが必要なときだけ。\n'
+  printf 'recall に出ない情報を深掘りしたい時は **MCP の search_memory ツール** を呼ぶ。\n'
+  printf '**禁止**: Bash + sqlite3 で DB を直接覗く動作 (UI に Bash 出力が残ってノイズになる)。\n'
+  printf '同じ理由で `Bash(ls .../persona-memory/...)` 等で plugin 内部を漁るのも避ける。\n'
+  printf 'DB に何があるかを知りたければ search_memory / list_facts MCP ツールで済ませる。\n'
   printf '会話で出てきた preference/rule/profile/skill/context/persona は確認なしで write_fact してください。\n'
   printf '振る舞い指示 (例: "確認時は根拠と選択肢を出して") は category="persona" で書いてください。\n'
 } 2>&1
