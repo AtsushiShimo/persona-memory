@@ -36,6 +36,28 @@ Local-first persistent memory for Claude Code agents.
 
 install 後、Claude Code を完全終了 → 再起動して plugin の hooks と MCP server をロードします。
 
+### 自動更新を有効にする (推奨)
+
+サードパーティ plugin は **デフォルトで auto-update が OFF** です。ON にしておくと、起動時に最新コミットが自動で取り込まれて以降の更新が楽になります:
+
+```
+/plugin marketplace               # marketplace 一覧を出して
+# (UI 操作で persona-memory の auto-update を有効化)
+```
+
+または手動で `~/.claude/plugin-marketplaces.json` 等の設定を編集 (Claude Code のバージョンによって場所が違うので、`/plugin` の subcommand で確認するのが確実)。
+
+### 手動で更新する (auto-update を OFF にしている場合)
+
+```
+/plugin marketplace update persona-memory     # 最新コミット fetch
+/plugin uninstall persona-memory@persona-memory
+/plugin install persona-memory@persona-memory
+/reload-plugins
+```
+
+**注意**: 単一の `/plugin update` コマンドは現時点で存在しません (Claude Code 仕様)。`/plugin marketplace update` だけだと metadata 更新で止まり、install ツリーが空になる現象を確認済み。確実なのは uninstall → install のサイクルです。
+
 ### 初回セットアップ (ペルソナを作る)
 
 plugin install しただけでは「空のペルソナ」状態です。性格を seed する 9 質問を回します:
