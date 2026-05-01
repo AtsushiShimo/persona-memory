@@ -25,6 +25,29 @@
 # In plugin form it equals $CLAUDE_PLUGIN_ROOT; in standalone it's the repo root.
 [ -n "${SCRIPT_HOME:-}" ] || SCRIPT_HOME="$(pwd)"
 
+# Claude Code (as of v2.1.x) does NOT reliably pass CLAUDE_PLUGIN_DATA into
+# the MCP server's launch environment, even though plugin hooks do receive it.
+# Without it, the MCP server can't locate the persistent persona DB and
+# write_fact / append_episode tools fail with "PERSONA_MEMORY_DB unset".
+#
+# Workaround: derive the canonical persistent data dir from the cache path.
+# Plugin layout convention:
+#   ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/   ← CLAUDE_PLUGIN_ROOT
+#   ~/.claude/plugins/data/<marketplace>-<plugin>/              ← CLAUDE_PLUGIN_DATA
+if [ -z "${CLAUDE_PLUGIN_DATA:-}" ] && [ -n "${SCRIPT_HOME:-}" ]; then
+  case "$SCRIPT_HOME" in
+    */plugins/cache/*/*/*)
+      _plugin_dir="$(dirname "$SCRIPT_HOME")"          # cache/<market>/<plugin>
+      _market_dir="$(dirname "$_plugin_dir")"          # cache/<market>
+      _plugins_root="$(dirname "$(dirname "$_market_dir")")"  # ~/.claude/plugins
+      _derived="$_plugins_root/data/$(basename "$_market_dir")-$(basename "$_plugin_dir")"
+      if [ -d "$_derived" ]; then
+        CLAUDE_PLUGIN_DATA="$_derived"
+      fi
+      ;;
+  esac
+fi
+
 # Resolve the data dir. Plugin form gets a stable per-install location that
 # survives plugin updates ($CLAUDE_PLUGIN_DATA); standalone uses repo/data.
 if [ -n "${CLAUDE_PLUGIN_DATA:-}" ] && [ -d "$CLAUDE_PLUGIN_DATA" ]; then
