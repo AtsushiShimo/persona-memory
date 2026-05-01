@@ -1,5 +1,5 @@
 ---
-description: Set up a new persona (asks 7 persona questions interactively; uses recommended Ollama models by default — change later with /persona-memory:configure-models)
+description: Set up a new persona (asks 7 persona questions interactively; gender-aware options; uses recommended Ollama models by default)
 allowed-tools: Bash, Read, Write, AskUserQuestion
 ---
 
@@ -7,94 +7,165 @@ allowed-tools: Bash, Read, Write, AskUserQuestion
 
 ## デフォルトのモデル設定
 
-このコマンドは **Ollama モデルを推奨デフォルトのまま使う** 前提です:
+このコマンドは Ollama モデルを推奨デフォルト (`gemma3:4b` / `gemma3:12b` / `nomic-embed-text`) で使う前提です。後で変更したい場合は `/persona-memory:configure-models` で変更できます。
 
-- 軽量モデル (light, 書き込み時): `gemma3:4b`
-- 重量モデル (heavy, 読み出し圧縮時): `gemma3:12b`
-- 埋め込みモデル: `nomic-embed-text`
+## AskUserQuestion の制約 (絶対遵守)
 
-低スペック機で軽量化したい / 大型 GPU で品質を上げたい場合は、セットアップ後に `/persona-memory:configure-models` で変更できます。今は深く考えずに進めて OK です。
+- **1 質問あたり最大 4 オプション**。それ以上は切られる。
+- **各オプションに `label` と `description` を必ず明示する**。description を空 / 省略すると agent が補完してハルシネーションを起こす。**以下の文言を逐語的に使い、勝手に書き換えない。**
+- **「その他」「Other」「自由入力」を選択肢に含めない**。tool が自動で追加してくれる。
+- **複数質問を 1 回の AskUserQuestion 呼び出しでバッチ可能 (最大 4 questions)**。関連する質問はまとめると UX が良い。
+- **`header` は 12 文字以内** の超短いタグ。
 
-## 質問 7 つ — すべて AskUserQuestion ツールで聞く
+## 性別ベースの選択肢フィルタ (重要)
 
-**重要**: 各質問は **必ず AskUserQuestion ツール** で出してください。プレーンテキストで「以下から選んでください」と列挙すると、markdown レンダラが文字 (a/b/c) と番号 (1/2/3) を不一致にしてユーザーが詰まります。AskUserQuestion ならクリック式で問題なし。
+選択肢が 4 個しかないので、Q2 (性別) の答えに応じて Q5 (一人称) と Q6 (口調) のオプションを **動的に変える**。これで「男性なのに『あたし』が候補に出る」「女性なのに『〜であります』が出る」といった不整合を回避する。下に各ケースの選択肢を表として書いてあるので、その通りに渡す。
 
-### Q1. 役割・立場
+---
 
-- **質問**: "このペルソナが何をする存在か"
-- **選択肢**:
-  - `バックエンドエンジニアの相棒`
-  - `辛口コードレビュアー`
-  - `仕様書・ドキュメントライター`
-  - `リサーチャー (調査・要約担当)`
-  - `メンター (教育・解説特化)`
-  - `議論パートナー・壁打ち相手`
-  - `プロダクトマネージャー視点の同僚`
-  - `その他` — 自由入力で別の役割を指定
+## Batch 1: 役割 + 性別 + 性格 + 呼称 を 1 回の AskUserQuestion で
+
+`questions` 配列に以下 4 個を入れて呼び出す:
+
+### Q1. 役割
+
+- **header**: `役割`
+- **question**: "このペルソナがあなたにとって何をする存在か？"
+- **multiSelect**: false
+- **options**:
+  1. label: `バックエンド相棒` / description: "API・DB・パフォーマンス改善で並走する開発パートナー"
+  2. label: `辛口コードレビュアー` / description: "PR を率直に審査して設計の弱点を指摘する役"
+  3. label: `壁打ちパートナー` / description: "アイデアを投げて反応や反論を返してもらう議論役"
+  4. label: `メンター` / description: "知識を体系的に解説する先生役"
 
 ### Q2. 性別
 
-- **質問**: "性別 (口調の選択にも影響します)"
-- **選択肢**: `男性` / `女性` / `中性 / ノンバイナリー` / `指定なし`
+- **header**: `性別`
+- **question**: "ペルソナの性別 (一人称や口調の選択肢にも影響します)"
+- **multiSelect**: false
+- **options**:
+  1. label: `男性` / description: "代名詞や口調が男性寄りになる"
+  2. label: `女性` / description: "代名詞や口調が女性寄りになる"
+  3. label: `中性` / description: "性別を強く出さないノンバイナリー寄り"
+  4. label: `指定なし` / description: "性別を意識せずペルソナに任せる"
 
 ### Q3. 性格
 
-- **質問**: "性格の中心軸"
-- **選択肢**:
-  - `冷静沈着・論理的`
-  - `明るく前向き`
-  - `辛口・率直`
-  - `慎重で丁寧`
-  - `探究心旺盛`
-  - `クール・寡黙`
-  - `包容力ある聞き役`
-  - `その他`
+- **header**: `性格`
+- **question**: "性格の中心軸"
+- **multiSelect**: false
+- **options**:
+  1. label: `冷静沈着・論理的` / description: "感情を抑え、根拠ベースで議論する"
+  2. label: `探究心旺盛` / description: "技術や仕組みを深掘りしたがる"
+  3. label: `辛口・率直` / description: "オブラートに包まず、問題点を直接指摘する"
+  4. label: `慎重で丁寧` / description: "確認を重ねて手堅く進める"
 
-### Q4. 一人称
+### Q4. 呼称
 
-- **質問**: "一人称"
-- **選択肢**: `僕` / `俺` / `私` / `わたくし` / `我輩` / `拙者` / `うち` / `あたし` / `その他`
+- **header**: `呼称`
+- **question**: "ペルソナはあなたをどう呼ぶか"
+- **multiSelect**: false
+- **options**:
+  1. label: `〜さん (敬称)` / description: "礼儀正しい汎用的な呼び方"
+  2. label: `あなた` / description: "中性、フォーマル寄り"
+  3. label: `君` / description: "親しみと、やや上からの距離感"
+  4. label: `マスター` / description: "主従関係を演出する特殊な呼び方"
 
-### Q5. 口調・話し方
+---
 
-- **質問**: "口調 (Q2 で選んだ性別との整合を意識すると自然)"
-- **選択肢**:
-  - `敬語 (丁寧・中性的)`
-  - `敬語 (女性的・柔らかめ — 〜ですの / 〜ますわ)`
-  - `敬語 (男性的・凛々しめ — 〜であります / 〜致します)`
-  - `タメ口 (フランク・中性的)`
-  - `タメ口 (女性的 — 〜だよね / 〜なの)`
-  - `タメ口 (男性的・荒め — 〜だぜ / 〜だな)`
-  - `お嬢様口調 (〜ですわ / 〜ですのよ)`
-  - `ぶっきらぼう・短文`
-  - `古風・文語調`
-  - `武士口調 (拙者…でござる)`
-  - `関西弁`
-  - `その他`
+## Batch 2: 一人称 + 口調 を 1 回の AskUserQuestion で (性別フィルタ適用)
 
-### Q6. ユーザーの呼び方
+Q2 で得た **性別の値に応じて以下の表から選択肢を選んで** AskUserQuestion を呼ぶ。description は逐語的に使うこと。
 
-- **質問**: "ユーザー (あなた) をペルソナはどう呼ぶか"
-- **選択肢**: `あなた` / `君` / `お前` / `〜さん (敬称)` / `〜様` / `マスター` / `ご主人` / `その他`
+### Q5. 一人称 (性別別)
 
-### Q7. 名前 (Ollama に提案させてから選択)
+#### 性別 = 男性
+- **options**:
+  1. label: `僕` / description: "やや柔らかい、男性的"
+  2. label: `俺` / description: "フランク、男性的"
+  3. label: `私` / description: "敬語と相性が良い、中性的"
+  4. label: `我輩` / description: "古風・大物感"
 
-ここまでの 6 つが揃ったら、**Ollama でペルソナ名を 3 つ生成** してから AskUserQuestion で問う:
+#### 性別 = 女性
+- **options**:
+  1. label: `私` / description: "敬語と相性が良い、中性的"
+  2. label: `わたくし` / description: "格式高い、特別丁寧"
+  3. label: `あたし` / description: "親しみのある女性的な一人称"
+  4. label: `うち` / description: "関西寄り・カジュアルな女性"
+
+#### 性別 = 中性 / 指定なし
+- **options**:
+  1. label: `私` / description: "敬語と相性が良い、中性的"
+  2. label: `僕` / description: "やや柔らかい、若干男性寄り"
+  3. label: `わたくし` / description: "格式高い、特別丁寧"
+  4. label: `俺` / description: "フランク、男性寄り"
+
+共通の **header**: `一人称`
+共通の **question**: "ペルソナが自分を指す一人称"
+共通の **multiSelect**: false
+
+### Q6. 口調 (性別別)
+
+#### 性別 = 男性
+- **options**:
+  1. label: `敬語 (中性)` / description: "標準的な〜です／〜ます調"
+  2. label: `敬語 (男性的)` / description: "〜であります／〜致します で凛々しい"
+  3. label: `タメ口 (中性)` / description: "口語体、親しみやすい"
+  4. label: `タメ口 (男性的)` / description: "〜だぜ／〜だな で荒め"
+
+#### 性別 = 女性
+- **options**:
+  1. label: `敬語 (中性)` / description: "標準的な〜です／〜ます調"
+  2. label: `敬語 (女性的)` / description: "〜ですの／〜ますわ で柔らかい"
+  3. label: `タメ口 (女性的)` / description: "〜だよね／〜なの で親しみやすい"
+  4. label: `お嬢様口調` / description: "〜ですわ／〜ですのよ で上品"
+
+#### 性別 = 中性 / 指定なし
+- **options**:
+  1. label: `敬語 (中性)` / description: "標準的な〜です／〜ます調"
+  2. label: `タメ口 (中性)` / description: "口語体、親しみやすい"
+  3. label: `敬語 (女性的)` / description: "〜ですの／〜ますわ で柔らかい"
+  4. label: `敬語 (男性的)` / description: "〜であります／〜致します で凛々しい"
+
+共通の **header**: `口調`
+共通の **question**: "話し方のスタイル"
+共通の **multiSelect**: false
+
+> 上記 4 オプションに無い口調 (古風・武士口調・関西弁等) を使いたいユーザーは tool が自動追加する **「Other」を選んで自由入力** できる。
+
+---
+
+## ペルソナ名候補を Ollama で生成
+
+ここまでの 6 つが揃ったら、以下を Bash で実行して名前候補を取得:
 
 ```bash
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(pwd)}"
 PERSONA_JUDGE_MODEL="gemma3:4b" \
   python3 "$PLUGIN_ROOT/scripts/suggest_names.py" \
-    --role "<Q1>" --gender "<Q2>" --personality "<Q3>" \
-    --first-person "<Q4>" --speech-style "<Q5>" 2>/dev/null
+    --role "<Q1 のラベル>" \
+    --gender "<Q2 のラベル>" \
+    --personality "<Q3 のラベル>" \
+    --first-person "<Q5 のラベル>" \
+    --speech-style "<Q6 のラベル>" 2>/dev/null
 ```
 
-3 行 (3 案) 出力されるので、それらを選択肢にして AskUserQuestion:
+3 行 (3 案) が出力される。空ならフォールバックで自由入力で名前を聞く (AskUserQuestion を使わず、テキストプロンプトで直接質問)。
 
-- **質問**: "ペルソナの名前 (生成案または自由入力)"
-- **選択肢**: `<生成案 1>` / `<生成案 2>` / `<生成案 3>` / `<basename(pwd)> (ディレクトリ名そのまま)` / `その他 (自由入力)`
+## Batch 3: 名前 (最後の AskUserQuestion)
 
-Ollama が失敗 (空出力) した場合は素直に AskUserQuestion を自由入力モードで出して名前を聞く。
+### Q7. 名前
+
+- **header**: `ペルソナ名`
+- **question**: "ペルソナの名前 (Ollama 提案 3 案 + ディレクトリ名)"
+- **multiSelect**: false
+- **options** (3 案 + ディレクトリ名 = 4 個):
+  1. label: `<Ollama 案 1>` / description: "Ollama がペルソナ設定から提案"
+  2. label: `<Ollama 案 2>` / description: "Ollama がペルソナ設定から提案"
+  3. label: `<Ollama 案 3>` / description: "Ollama がペルソナ設定から提案"
+  4. label: `<basename(pwd)>` / description: "ディレクトリ名そのまま"
+
+> 自分で考えた名前にしたいユーザーは「Other」で自由入力。
 
 ---
 
@@ -134,13 +205,14 @@ PERSONA_MEMORY_DB="$DATA_DIR/$NAME.db" \
   "$PLUGIN_ROOT/.venv/bin/python" "$PLUGIN_ROOT/scripts/seed_persona.py" \
   --name "$NAME" \
   --role "<Q1>" --gender "<Q2>" --personality "<Q3>" \
-  --first-person "<Q4>" --speech-style "<Q5>" \
-  --address-user "<Q6>"
+  --first-person "<Q5>" --speech-style "<Q6>" \
+  --address-user "<Q4>"
 ```
 
 完了後ユーザーへ:
-- 完了サマリー (名前 / 役割 / 性格 / DB パス)
+
+- 完了サマリー (名前 / 役割 / 性格 / 一人称 / 口調 / DB パス)
 - 使ったモデル: `gemma3:4b` (light) + `gemma3:12b` (heavy) + `nomic-embed-text` (embed)
-- **変更したい場合は** `/persona-memory:configure-models` (低スペック機なら gemma3:1b / qwen2.5:3b 等)
+- 変更したい場合は `/persona-memory:configure-models`
 - **Claude Code を完全終了 → 再起動** で MCP server と hook がロードされる
 - 次回起動時から SessionStart で persona facts が自動注入される
