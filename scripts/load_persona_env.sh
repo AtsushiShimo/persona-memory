@@ -112,3 +112,16 @@ fi
 # - PERSONA_RECALL_COMPRESS_MODEL is what proxy_recall reads.
 export PERSONA_JUDGE_MODEL="${PERSONA_JUDGE_MODEL:-$PERSONA_LIGHT_MODEL}"
 export PERSONA_RECALL_COMPRESS_MODEL="${PERSONA_RECALL_COMPRESS_MODEL:-$PERSONA_HEAVY_MODEL}"
+
+# CRITICAL: variables sourced from config.env are *shell-local* unless we
+# export them. Python child processes (MCP server, auto_persist.py, etc.)
+# only see the environment, not the shell scope. Without these explicit
+# exports, PERSONA_MEMORY_DB is invisible to Python and the MCP server's
+# write_fact / append_episode tools fail with "PERSONA_MEMORY_DB unset".
+export PERSONA_MEMORY_DB
+export PERSONA_LIGHT_MODEL
+export PERSONA_HEAVY_MODEL
+export PERSONA_EMBED_MODEL
+export OLLAMA_HOST
+export PERSONA_JUDGE_MODEL
+export PERSONA_RECALL_COMPRESS_MODEL
