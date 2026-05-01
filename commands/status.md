@@ -7,8 +7,16 @@ allowed-tools: Bash
 
 ```bash
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(pwd)}"
-DATA_DIR="${CLAUDE_PLUGIN_DATA:-$PLUGIN_ROOT/data}"
-SCRIPT_HOME="$PLUGIN_ROOT" . "$PLUGIN_ROOT/scripts/load_persona_env.sh"
+case "$PLUGIN_ROOT" in
+  */plugins/cache/*/*/*)
+    _plugin_dir="$(dirname "$PLUGIN_ROOT")"
+    _market_dir="$(dirname "$_plugin_dir")"
+    _plugins_root="$(dirname "$(dirname "$_market_dir")")"
+    DATA_DIR="$_plugins_root/data/$(basename "$_market_dir")-$(basename "$_plugin_dir")"
+    ;;
+  *) DATA_DIR="$PLUGIN_ROOT/data" ;;
+esac
+SCRIPT_HOME="$PLUGIN_ROOT" CLAUDE_PLUGIN_DATA="$DATA_DIR" . "$PLUGIN_ROOT/scripts/load_persona_env.sh"
 
 echo "=== persona-memory status ==="
 echo "plugin root: $PLUGIN_ROOT"

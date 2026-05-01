@@ -7,7 +7,15 @@ allowed-tools: Bash
 
 ```bash
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(pwd)}"
-DATA_DIR="${CLAUDE_PLUGIN_DATA:-$PLUGIN_ROOT/data}"
+case "$PLUGIN_ROOT" in
+  */plugins/cache/*/*/*)
+    _plugin_dir="$(dirname "$PLUGIN_ROOT")"
+    _market_dir="$(dirname "$_plugin_dir")"
+    _plugins_root="$(dirname "$(dirname "$_market_dir")")"
+    DATA_DIR="$_plugins_root/data/$(basename "$_market_dir")-$(basename "$_plugin_dir")"
+    ;;
+  *) DATA_DIR="$PLUGIN_ROOT/data" ;;
+esac
 ACTIVE=""
 [ -r "$DATA_DIR/active-persona" ] && ACTIVE="$(cat "$DATA_DIR/active-persona" 2>/dev/null)"
 

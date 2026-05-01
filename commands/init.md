@@ -174,8 +174,25 @@ PERSONA_JUDGE_MODEL="gemma3:4b" \
 7 問すべて揃ったら、以下を順に Bash で実行:
 
 ```bash
+# CLAUDE_PLUGIN_ROOT は Bash tool 環境にも plugin context で渡される。
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(pwd)}"
-DATA_DIR="${CLAUDE_PLUGIN_DATA:-$PLUGIN_ROOT/data}"
+
+# CLAUDE_PLUGIN_DATA は Bash tool には渡らないので、convention から計算する:
+#   ~/.claude/plugins/cache/<market>/<plugin>/<version>  ← CLAUDE_PLUGIN_ROOT
+#   ~/.claude/plugins/data/<market>-<plugin>             ← 永続 data dir
+case "$PLUGIN_ROOT" in
+  */plugins/cache/*/*/*)
+    _plugin_dir="$(dirname "$PLUGIN_ROOT")"
+    _market_dir="$(dirname "$_plugin_dir")"
+    _plugins_root="$(dirname "$(dirname "$_market_dir")")"
+    DATA_DIR="$_plugins_root/data/$(basename "$_market_dir")-$(basename "$_plugin_dir")"
+    ;;
+  *)
+    # standalone form fallback
+    DATA_DIR="$PLUGIN_ROOT/data"
+    ;;
+esac
+mkdir -p "$DATA_DIR"
 
 NAME="<Q7 で決まった名前>"
 LIGHT="gemma3:4b"     # デフォルト固定。/persona-memory:configure-models で後変更可能
@@ -191,7 +208,6 @@ CLAUDE_PLUGIN_DATA="$DATA_DIR" \
   bash "$PLUGIN_ROOT/setup.sh" "$NAME"
 
 # 2. config.env を書く (hooks がここから読む)
-mkdir -p "$DATA_DIR"
 cat > "$DATA_DIR/$NAME.config.env" <<EOF
 PERSONA_MEMORY_DB="$DATA_DIR/$NAME.db"
 PERSONA_LIGHT_MODEL="$LIGHT"
