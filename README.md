@@ -60,31 +60,34 @@ install 後、Claude Code を完全終了 → 再起動して plugin の hooks �
 
 ### 初回セットアップ (ペルソナを作る)
 
-plugin install しただけでは「空のペルソナ」状態です。性格を seed する 9 質問を回します:
+plugin install しただけでは「空のペルソナ」状態です。性格を seed する 7 質問を回します:
 
 ```
 /persona-memory:init
 ```
 
-Claude が以下を 1 つずつ会話で聞いてきます (番号で選ぶか自由入力):
+Claude が AskUserQuestion ツールでクリック式の選択肢を出します (各問とも自由入力可):
 
-1. 軽量モデル (light) — 書き込み時に使う Ollama モデル (推奨: `gemma3:4b`)
-2. 重量モデル (heavy) — 読み出し圧縮時に使う Ollama モデル (推奨: `gemma3:12b`)
-3. 役割 (バックエンドエンジニアの相棒 / 辛口コードレビュアー / 議論パートナー…)
-4. 性別
-5. 性格 (探究心旺盛 / 冷静沈着・論理的 / 辛口・率直…)
-6. 一人称 (僕 / 俺 / 私 / 拙者…)
-7. 口調 (敬語 中性的 / 敬語 女性的 / タメ口 男性的 / 武士口調…)
-8. ユーザーの呼び方 (あなた / 君 / 〜さん / マスター…)
-9. 名前 — Ollama がここまでの設定から 3 案提案、選択 or 自由入力
+1. 役割 (バックエンドエンジニアの相棒 / 辛口コードレビュアー / 議論パートナー…)
+2. 性別
+3. 性格 (探究心旺盛 / 冷静沈着・論理的 / 辛口・率直…)
+4. 一人称 (僕 / 俺 / 私 / 拙者…)
+5. 口調 (敬語 中性的 / 敬語 女性的 / タメ口 男性的 / 武士口調…)
+6. ユーザーの呼び方 (あなた / 君 / 〜さん / マスター…)
+7. 名前 — Ollama がここまでの設定から 3 案提案、選択 or 自由入力
+
+Ollama モデルは推奨デフォルト (`gemma3:4b` / `gemma3:12b` / `nomic-embed-text`) を使います。
+低スペック機で軽量化したい / 大型 GPU で品質を上げたい場合はセットアップ後に
+`/persona-memory:configure-models` で変更できます。
 
 完了したら **Claude Code を完全終了 → 再起動**。次回起動から persona facts が SessionStart で自動注入されます。
 
 ### 他の slash commands
 
 ```
-/persona-memory:list     # 登録済みペルソナ一覧 (active 印 + facts/episodes 数)
-/persona-memory:status   # 現在のペルソナ状態 + DB stats + Ollama ヘルスチェック
+/persona-memory:list                # 登録済みペルソナ一覧 (active 印 + facts/episodes 数)
+/persona-memory:status              # 現在のペルソナ状態 + DB stats + Ollama ヘルスチェック
+/persona-memory:configure-models    # 軽量/重量モデルを後から変更 (低スペック機向け軽量化など)
 ```
 
 ペルソナ切替の slash command は意図的に提供していません (セッション中の人格切替は context 混在を起こすため)。複数ペルソナを使い分けたい場合は別ディレクトリに別 install してください。
