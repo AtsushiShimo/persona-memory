@@ -1,39 +1,48 @@
 #!/usr/bin/env bash
 # Set up a persona memory MCP server: venv + deps + Ollama models + DB.
 #
-# Usage:  ./setup.sh <persona-name>
-# Example: ./setup.sh methodology-explorer
+# Usage:  ./setup.sh <persona-name> [<project-dir>]
+# Example: ./setup.sh code-reviewer ~/Desktop/myproject
 #
-# Plugin form: invoked indirectly via /persona-memory:init. Writes .venv and
-# DB into $CLAUDE_PLUGIN_DATA so plugin version bumps (which wipe the cache
-# tree) do NOT destroy the python venv or the persisted facts.
+# Layout (per project = per persona):
+#   ~/.claude/plugins/data/<market>-<plugin>/.venv  ← shared venv (CLAUDE_PLUGIN_DATA)
+#   <project-dir>/.persona-memory/<persona>.db      ← project-local memory
+#   <project-dir>/.persona-memory/<persona>.config.env
+#   <project-dir>/.persona-memory/active-persona
 #
-# Standalone form: invoked from a cloned repo. Writes .venv into $ROOT/.venv
-# and DB into $ROOT/data/<persona>.db (legacy layout).
+# Plugin form: invoked via /persona-memory:init. CLAUDE_PLUGIN_DATA holds
+# the shared venv; project dir comes from arg 2 (or the slash command's pwd).
+# Standalone form: invoked from a cloned repo without CLAUDE_PLUGIN_DATA.
+# Then both venv and DB go under $ROOT/.
 
 set -euo pipefail
 
 PERSONA="${1:-}"
+PROJECT_DIR="${2:-}"
 if [[ -z "$PERSONA" ]]; then
-  echo "Usage: $0 <persona-name>" >&2
+  echo "Usage: $0 <persona-name> [<project-dir>]" >&2
   exit 1
 fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Resolve the persistent data dir. In plugin form Claude Code passes
-# CLAUDE_PLUGIN_DATA (eg ~/.claude/plugins/data/<market>-<plugin>); we use
-# that as the home for both .venv and the SQLite DB so they survive plugin
-# version bumps. In standalone form we fall back to $ROOT.
+# Decide where the shared venv lives.
 if [[ -n "${CLAUDE_PLUGIN_DATA:-}" ]]; then
-  DATA_DIR="$CLAUDE_PLUGIN_DATA"
+  VENV_HOME="$CLAUDE_PLUGIN_DATA"
 else
-  DATA_DIR="$ROOT/data"
+  VENV_HOME="$ROOT"
 fi
-mkdir -p "$DATA_DIR"
+mkdir -p "$VENV_HOME"
 
-DB_PATH="$DATA_DIR/$PERSONA.db"
-VENV="$DATA_DIR/.venv"
+# Decide where project-local persona data lives.
+if [[ -z "$PROJECT_DIR" ]]; then
+  PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+fi
+PERSONA_DIR="$PROJECT_DIR/.persona-memory"
+mkdir -p "$PERSONA_DIR"
+
+DB_PATH="$PERSONA_DIR/$PERSONA.db"
+VENV="$VENV_HOME/.venv"
 EMBED_MODEL="${PERSONA_EMBED_MODEL:-nomic-embed-text}"
 JUDGE_MODEL="${PERSONA_JUDGE_MODEL:-gemma3:12b}"
 
@@ -68,7 +77,7 @@ for m in "$EMBED_MODEL" "$JUDGE_MODEL"; do
   fi
 done
 
-# 3. DB init
+# 3. DB init (project-local)
 if [[ -e "$DB_PATH" ]]; then
   log "DB exists, leaving as-is: $DB_PATH"
 else
@@ -76,33 +85,6 @@ else
   "$VENV/bin/python" "$ROOT/scripts/init-memory.py" "$DB_PATH"
 fi
 
-# 4. Print MCP registration snippet (standalone-form helper; plugin form
-#    skips this since .mcp.json is already declared in plugin.json)
-if [[ -z "${CLAUDE_PLUGIN_DATA:-}" ]]; then
-  cat <<EOF
-
-==========================================================================
-Setup complete for persona: $PERSONA  (standalone)
-  DB:           $DB_PATH
-  venv:         $VENV
-  embed model:  $EMBED_MODEL
-  judge model:  $JUDGE_MODEL
-
-Register with your LLM client (example for Claude Code):
-  Add to $ROOT/.mcp.json or ~/.claude.json:
-    "command": "$VENV/bin/python"
-    "args": ["-m", "server.main"]
-    "cwd": "$ROOT"
-    env: {
-      "PERSONA_MEMORY_DB": "$DB_PATH",
-      "OLLAMA_HOST": "http://localhost:11434",
-      "PERSONA_EMBED_MODEL": "$EMBED_MODEL",
-      "PERSONA_JUDGE_MODEL": "$JUDGE_MODEL"
-    }
-
-After registration, restart your LLM client and call health_check to verify.
-==========================================================================
-EOF
-else
-  log "plugin install — venv at $VENV will survive plugin version bumps"
-fi
+log "venv:         $VENV  (shared across all projects)"
+log "persona DB:   $DB_PATH  (project-local)"
+log "models:       light=$EMBED_MODEL? embed=$EMBED_MODEL judge=$JUDGE_MODEL"

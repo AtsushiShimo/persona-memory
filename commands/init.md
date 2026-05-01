@@ -174,42 +174,41 @@ PERSONA_JUDGE_MODEL="gemma3:4b" \
 7 問すべて揃ったら、以下を順に Bash で実行:
 
 ```bash
-# CLAUDE_PLUGIN_ROOT は Bash tool 環境にも plugin context で渡される。
+# Plugin code lives in cache (CLAUDE_PLUGIN_ROOT is exported to Bash).
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(pwd)}"
 
-# CLAUDE_PLUGIN_DATA は Bash tool には渡らないので、convention から計算する:
-#   ~/.claude/plugins/cache/<market>/<plugin>/<version>  ← CLAUDE_PLUGIN_ROOT
-#   ~/.claude/plugins/data/<market>-<plugin>             ← 永続 data dir
+# Shared Python venv lives in $CLAUDE_PLUGIN_DATA — derived from the cache
+# convention since Bash tool doesn't get CLAUDE_PLUGIN_DATA directly.
 case "$PLUGIN_ROOT" in
   */plugins/cache/*/*/*)
     _plugin_dir="$(dirname "$PLUGIN_ROOT")"
     _market_dir="$(dirname "$_plugin_dir")"
     _plugins_root="$(dirname "$(dirname "$_market_dir")")"
-    DATA_DIR="$_plugins_root/data/$(basename "$_market_dir")-$(basename "$_plugin_dir")"
+    VENV_HOME="$_plugins_root/data/$(basename "$_market_dir")-$(basename "$_plugin_dir")"
     ;;
-  *)
-    # standalone form fallback
-    DATA_DIR="$PLUGIN_ROOT/data"
-    ;;
+  *) VENV_HOME="$PLUGIN_ROOT" ;;
 esac
-mkdir -p "$DATA_DIR"
+mkdir -p "$VENV_HOME"
+
+# Project-local persona memory dir. Each project has its own persona.
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+PERSONA_DIR="$PROJECT_DIR/.persona-memory"
+mkdir -p "$PERSONA_DIR"
 
 NAME="<Q7 で決まった名前>"
 LIGHT="gemma3:4b"     # デフォルト固定。/persona-memory:configure-models で後変更可能
 HEAVY="gemma3:12b"
 EMBED="nomic-embed-text"
 
-# 1. venv + Ollama モデル + DB 初期化
-#    setup.sh は CLAUDE_PLUGIN_DATA があれば $DATA_DIR/.venv に venv を作る
-#    (plugin version bump で cache が消えても venv は残る設計)
-CLAUDE_PLUGIN_DATA="$DATA_DIR" \
+# 1. shared venv + Ollama モデル + project-local DB 初期化
+CLAUDE_PLUGIN_DATA="$VENV_HOME" CLAUDE_PROJECT_DIR="$PROJECT_DIR" \
   PERSONA_LIGHT_MODEL="$LIGHT" PERSONA_HEAVY_MODEL="$HEAVY" \
   PERSONA_JUDGE_MODEL="$LIGHT" \
   bash "$PLUGIN_ROOT/setup.sh" "$NAME"
 
 # 2. config.env を書く (hooks がここから読む)
-cat > "$DATA_DIR/$NAME.config.env" <<EOF
-PERSONA_MEMORY_DB="$DATA_DIR/$NAME.db"
+cat > "$PERSONA_DIR/$NAME.config.env" <<EOF
+PERSONA_MEMORY_DB="$PERSONA_DIR/$NAME.db"
 PERSONA_LIGHT_MODEL="$LIGHT"
 PERSONA_HEAVY_MODEL="$HEAVY"
 PERSONA_EMBED_MODEL="$EMBED"
@@ -217,15 +216,21 @@ OLLAMA_HOST="http://localhost:11434"
 EOF
 
 # 3. このペルソナをアクティブに
-echo "$NAME" > "$DATA_DIR/active-persona"
+echo "$NAME" > "$PERSONA_DIR/active-persona"
 
-# 4. persona facts を seed (venv は永続データ側にある)
-PERSONA_MEMORY_DB="$DATA_DIR/$NAME.db" \
-  "$DATA_DIR/.venv/bin/python" "$PLUGIN_ROOT/scripts/seed_persona.py" \
+# 4. persona facts を seed
+PERSONA_MEMORY_DB="$PERSONA_DIR/$NAME.db" \
+  "$VENV_HOME/.venv/bin/python" "$PLUGIN_ROOT/scripts/seed_persona.py" \
   --name "$NAME" \
   --role "<Q1>" --gender "<Q2>" --personality "<Q3>" \
   --first-person "<Q5>" --speech-style "<Q6>" \
   --address-user "<Q4>"
+
+# 5. .gitignore に .persona-memory/ を追加するか提案 (個人記憶を git に上げない)
+if [ -d "$PROJECT_DIR/.git" ] && ! grep -q "^\.persona-memory/$" "$PROJECT_DIR/.gitignore" 2>/dev/null; then
+  echo ".persona-memory/" >> "$PROJECT_DIR/.gitignore"
+  echo "[ok] added .persona-memory/ to $PROJECT_DIR/.gitignore"
+fi
 ```
 
 完了後ユーザーへ:

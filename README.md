@@ -2,6 +2,7 @@
 
 Local-first persistent memory for Claude Code agents.
 
+- **1 プロジェクト = 1 ペルソナ = 1 個人記憶**: `.persona-memory/` をプロジェクトディレクトリ内に持つ
 - 1 plugin install で `/clear` をまたいで会話の連続性を維持
 - 全データは手元の SQLite (sqlite-vec で埋め込み検索) に。外部 API 不要
 - 書き込みは軽量 Ollama (gemma3:4b 等)、読み出し圧縮は重量 Ollama (gemma3:12b 等) の二段構え
