@@ -174,11 +174,21 @@ PERSONA_JUDGE_MODEL="gemma3:4b" \
 7 問すべて揃ったら、以下を順に Bash で実行:
 
 ```bash
-# Plugin code lives in cache (CLAUDE_PLUGIN_ROOT is exported to Bash).
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(pwd)}"
+# Plugin location: Claude Code's Bash tool does NOT expose CLAUDE_PLUGIN_ROOT
+# (only hooks/MCP servers receive it). Auto-discover from the cache path
+# instead — pick the latest version directory we can find.
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+if [ -z "$PLUGIN_ROOT" ] || [ ! -d "$PLUGIN_ROOT" ]; then
+  PLUGIN_ROOT=$(ls -d "$HOME"/.claude/plugins/cache/persona-memory/persona-memory/*/ 2>/dev/null \
+                | sort -V | tail -1 | sed 's|/$||')
+fi
+if [ -z "$PLUGIN_ROOT" ] || [ ! -d "$PLUGIN_ROOT" ]; then
+  echo "ERROR: persona-memory plugin cache not found. Run /plugin install first." >&2
+  exit 1
+fi
 
-# Shared Python venv lives in $CLAUDE_PLUGIN_DATA — derived from the cache
-# convention since Bash tool doesn't get CLAUDE_PLUGIN_DATA directly.
+# Shared Python venv lives in $CLAUDE_PLUGIN_DATA. Derive from the cache
+# convention — Bash tool doesn't get CLAUDE_PLUGIN_DATA directly.
 case "$PLUGIN_ROOT" in
   */plugins/cache/*/*/*)
     _plugin_dir="$(dirname "$PLUGIN_ROOT")"
