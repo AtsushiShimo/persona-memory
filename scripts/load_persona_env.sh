@@ -46,17 +46,6 @@ if [ -z "${CLAUDE_PLUGIN_DATA:-}" ] && [ -n "${SCRIPT_HOME:-}" ]; then
         CLAUDE_PLUGIN_DATA="$_derived"
       fi
       ;;
-    */plugins/marketplaces/*)
-      # Fallback path: ~/.claude/plugins/marketplaces/<plugin>
-      # (used when cache install repeatedly fails and installPath is redirected here)
-      _plugin_name="$(basename "$SCRIPT_HOME")"
-      _plugins_root="$(dirname "$(dirname "$SCRIPT_HOME")")"  # ~/.claude/plugins
-      # Marketplace name = plugin name in our convention; data dir is <name>-<name>
-      _derived="$_plugins_root/data/$_plugin_name-$_plugin_name"
-      if [ -d "$_derived" ]; then
-        CLAUDE_PLUGIN_DATA="$_derived"
-      fi
-      ;;
   esac
 fi
 
