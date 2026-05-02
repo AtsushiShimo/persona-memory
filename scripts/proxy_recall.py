@@ -105,12 +105,14 @@ def store_to_keychain(label: str, value: str) -> bool:
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 EMBED_MODEL = os.environ.get("PERSONA_EMBED_MODEL", "nomic-embed-text")
 DB_PATH = os.environ.get("PERSONA_MEMORY_DB", "")
+# 注入量の上限。低 distance (= 高関連) かつ少数 (top_k=5) に絞ることで
+# context 膨張と低関連ノイズを同時に削る。fact / episode どちらも 0.7。
 TOP_K = int(os.environ.get("PERSONA_RECALL_TOP_K", "5"))
-DISTANCE_MAX = float(os.environ.get("PERSONA_RECALL_DISTANCE_MAX", "1.0"))
+DISTANCE_MAX = float(os.environ.get("PERSONA_RECALL_DISTANCE_MAX", "0.7"))
 DECAY_LAMBDA = float(os.environ.get("PERSONA_RECALL_DECAY_LAMBDA", "0.08"))
 EMBED_TIMEOUT = float(os.environ.get("PERSONA_RECALL_TIMEOUT", "8.0"))
 EPISODE_TOP_K = int(os.environ.get("PERSONA_RECALL_EPISODE_TOP_K", "5"))
-EPISODE_DISTANCE_MAX = float(os.environ.get("PERSONA_RECALL_EPISODE_DISTANCE_MAX", "1.1"))
+EPISODE_DISTANCE_MAX = float(os.environ.get("PERSONA_RECALL_EPISODE_DISTANCE_MAX", "0.7"))
 EPISODE_SUMMARY_CAP = int(os.environ.get("PERSONA_RECALL_EPISODE_SUMMARY_CAP", "240"))
 
 # LLM compression at *read time*. Per rule/memory_save_policy:
@@ -136,6 +138,7 @@ CATEGORY_POLICY: dict[str, dict] = {
     "rule":       {"windows": [None],          "decay": False},
     "skill":      {"windows": [365, None],     "decay": True},
     "preference": {"windows": [90, 365, None], "decay": True},
+    "aversion":   {"windows": [90, 365, None], "decay": True},
     "context":    {"windows": [30, 90, 365],   "decay": True},
 }
 DEFAULT_POLICY = {"windows": [180, None], "decay": True}
@@ -375,6 +378,24 @@ def main() -> None:
 
     blob = embed(prompt)
     if not blob:
+        # fail-loud: Ollama 落ち / embedding 失敗時はメインエージェントが
+        # 「記憶 recall がオフライン」と認識できるように additionalContext で
+        # 通知する (silent 死を防ぐ)。stderr にも一行残す。
+        sys.stderr.write(
+            "[persona-memory] Ollama embedding failed; recall offline this turn\n"
+        )
+        warn = (
+            "## persona-memory 警告\n"
+            "Ollama 接続失敗または embedding エラーのため、今ターンは記憶 recall が "
+            "無効化されています。`ollama serve` の起動状態を確認してください。"
+        )
+        out = {
+            "hookSpecificOutput": {
+                "hookEventName": "UserPromptSubmit",
+                "additionalContext": warn,
+            }
+        }
+        print(json.dumps(out, ensure_ascii=False))
         return
     try:
         candidates = fetch_candidates(blob, max(TOP_K * 4, 20))

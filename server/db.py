@@ -282,6 +282,58 @@ def write_episode_embedding(episode_id: int, embedding_blob: bytes) -> None:
         )
 
 
+def gc_episodes(
+    *,
+    raw_ttl_days: int = 30,
+    summary_ttl_days: int | None = None,
+) -> dict:
+    """Delete old episodes past their TTL, plus their vec rows.
+
+    `raw_user` / `raw_assistant` / `raw_dump` are conversation traces — short
+    lived (default 30 days). `system` rows are PreCompact / SessionEnd
+    summaries — by default **never deleted** (`summary_ttl_days=None`) so
+    multi-year projects can still recall "the decision we made 3 years ago".
+    Summaries are short (a few hundred chars each), so even 10k of them is
+    only a few MB.
+
+    Returns counts so the caller can log them.
+    """
+    raw_roles = ("raw_user", "raw_assistant", "raw_dump")
+    with connect() as c:
+        raw_ids = [
+            r["id"]
+            for r in c.execute(
+                f"SELECT id FROM episodes "
+                f"WHERE role IN ({','.join('?' * len(raw_roles))}) "
+                f"AND created_at < datetime('now', '+9 hours', ?)",
+                (*raw_roles, f"-{raw_ttl_days} days"),
+            ).fetchall()
+        ]
+        summary_ids: list[int] = []
+        if summary_ttl_days is not None:
+            summary_ids = [
+                r["id"]
+                for r in c.execute(
+                    "SELECT id FROM episodes "
+                    "WHERE role = 'system' "
+                    "AND created_at < datetime('now', '+9 hours', ?)",
+                    (f"-{summary_ttl_days} days",),
+                ).fetchall()
+            ]
+        all_ids = raw_ids + summary_ids
+        if all_ids:
+            placeholders = ",".join("?" * len(all_ids))
+            c.execute(
+                f"DELETE FROM episodes_vec WHERE episode_id IN ({placeholders})",
+                all_ids,
+            )
+            c.execute(
+                f"DELETE FROM episodes WHERE id IN ({placeholders})",
+                all_ids,
+            )
+    return {"raw_deleted": len(raw_ids), "summary_deleted": len(summary_ids)}
+
+
 def search_episodes(*, embedding_blob: bytes, top_k: int) -> list[dict]:
     with connect() as c:
         rows = c.execute(

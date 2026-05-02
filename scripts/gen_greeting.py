@@ -58,8 +58,13 @@ async def main() -> None:
             text = (r.json().get("response") or "").strip().strip('"').strip("「」")
             if text:
                 print(text)
-    except Exception:
-        pass
+    except Exception as e:
+        # fail-loud: SessionStart 挨拶生成だけは静かに死ぬとユーザーが
+        # 「今日は挨拶ない=何かおかしい?」と気づかないので、stderr に明示。
+        sys.stderr.write(
+            f"[persona-memory] greeting generation failed "
+            f"({type(e).__name__}); SessionStart will skip the recap line\n"
+        )
 
 
 if __name__ == "__main__":

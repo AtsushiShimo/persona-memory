@@ -70,6 +70,7 @@ VALID_CATEGORIES = {
     "profile",
     "skill",
     "context",
+    "aversion",
 }
 
 MIN_VALUE_LEN = int(os.environ.get("PERSONA_AUTO_PERSIST_MIN_VALUE_LEN", "15"))
@@ -127,7 +128,7 @@ TODO_RE = re.compile(
 # 他の fact を category/key 形式で参照する meta-fact (例: "preference/lint_usage は…")。
 # 自己参照ループの典型パターン。
 META_REF_RE = re.compile(
-    r"(persona|preference|rule|profile|skill|context)/[a-z][a-z0-9_]*"
+    r"(persona|preference|rule|profile|skill|context|aversion)/[a-z][a-z0-9_]*"
 )
 
 # 進捗状況・一時的ステータス (DL 進行中、%、サイズ単位、ETA など)。
@@ -160,7 +161,7 @@ def is_noise_value(category: str, value: str) -> tuple[bool, str]:
     # 短文 (< 60 字) で system 用語が混じる場合も同様に弾く。
     system_hits = sum(1 for term in SYSTEM_TERMS if term in v)
     if system_hits:
-        if category in ("rule", "preference", "persona"):
+        if category in ("rule", "preference", "persona", "aversion"):
             return True, "system_term_in_non_context"
         if category == "context":
             if len(v) < 60:
@@ -295,7 +296,7 @@ JUDGE_PROMPT_TEMPLATE = """以下は人間 (User) と AI アシスタント (Ass
 {{
   "facts": [
     {{
-      "category": "preference|rule|profile|skill|context|persona のいずれか",
+      "category": "preference|aversion|rule|profile|skill|context|persona のいずれか",
       "key": "snake_case の安定識別子 (例: editor, main_languages, ci_cache_strategy)",
       "value": "簡潔な事実 (1-2 文)。会話に直接書かれていることだけ",
       "importance": 1-6 の整数,
@@ -322,7 +323,9 @@ JUDGE_PROMPT_TEMPLATE = """以下は人間 (User) と AI アシスタント (Ass
 
 【category の使い分け (厳密に)】
 - `rule` = **ハード制約** のみ (例: "main に force push 禁止"、"PII を log に出さない")。手順・操作方法は rule **ではない**
-- `preference` = ユーザーの**安定した嗜好** (例: "neovim 派"、"英語コミット")
+- `preference` = ユーザーの**安定した「やりたい / 好む」嗜好** (例: "neovim 派"、"英語コミット")
+- `aversion` = ユーザーの**安定した「避けたい / やりたくない / 苦手」忌避項目** (例: "Java は書きたくない"、"深夜帯のメンションを避けたい")
+  - preference と独立。"X が好き" は preference、"X を避けたい" は aversion。preference を反転して aversion を作らないこと
 - `profile` = ユーザー属性 (役職・住居・所有物・関係)
 - `skill` = ユーザーのスキル・経験
 - `context` = 現在進行中の固有名詞付きタスクや状況 (例: "proxy_recall.py 改修中")。一般論や警告は context **ではない**
@@ -334,6 +337,7 @@ JUDGE_PROMPT_TEMPLATE = """以下は人間 (User) と AI アシスタント (Ass
 
 【記憶すべき (拾え) — 迷ったら拾う側に倒す】
 - ユーザーが新たに表明した嗜好・属性・スキル・進行中タスク
+- ユーザーが明示した忌避項目 (やりたくない / 避けたい / 苦手 / 嫌い / してほしくない) → `aversion`
 - ユーザーが私に下した指示 (振る舞いルール → persona)
 - 設計判断・パラメータ確定・却下案とその理由 → episode
 - 私が出した推奨案で**ユーザーが採択を明言したもの** → episode
@@ -530,6 +534,14 @@ async def main_async() -> None:
             summary = (episode.get("summary") or "").strip()
             if summary:
                 await persist_episode(session_id, summary)
+    else:
+        # fail-loud: judge が None / 空を返した = Ollama 落ちか judge 解析失敗。
+        # 生ターンは既に保存済みなのでデータ救命網は機能している。stderr に
+        # 一行残し、後続の hook 実行に visibility を残す。
+        sys.stderr.write(
+            "[persona-memory] auto_persist judge returned no result "
+            "(Ollama unreachable or parse failed); raw turns saved anyway\n"
+        )
 
     set_meta(meta_key, str(len(messages)))
 

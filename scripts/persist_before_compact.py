@@ -235,6 +235,12 @@ async def main_async() -> None:
     # 2) **要約 episode (補助)**: gemma3 で要約。失敗しても 1) で生発話は守られる。
     summary = await summarize(recent)
     if not summary:
+        # fail-loud: summarize 失敗 = Ollama 落ち or timeout。raw_dump は保存済み
+        # なので情報は失われない。stderr に一行残してオペレーターが気づけるように。
+        sys.stderr.write(
+            "[persona-memory] PreCompact/SessionEnd summary via Ollama failed; "
+            "raw dump saved, using tail fallback for summary\n"
+        )
         # Fallback: tail concat so we save *something* even if the judge fails.
         summary = "\n".join(
             f"[{m['role']}] {m['content'][:200]}" for m in recent[-5:]
@@ -258,7 +264,23 @@ async def main_async() -> None:
         vec = await embedding.embed_text(summary)
         db.write_episode_embedding(ep_id, embedding.pack_embedding(vec))
     except Exception:
-        return
+        pass
+
+    # SessionEnd でだけ episodes TTL GC を走らせる。PreCompact 中は context が
+    # 詰まりがちで余計な仕事を増やしたくない。raw 系は 30 日で消し、summary は
+    # 永続 (None) — 数年単位プロジェクトで「3 年前の決定」を引けるようにする。
+    # summary は短いのでストレージ的に永続でも実害なし。
+    if kind == "SessionEnd":
+        try:
+            r = db.gc_episodes(raw_ttl_days=30, summary_ttl_days=None)
+            if r["raw_deleted"] or r["summary_deleted"]:
+                print(
+                    f"[gc] deleted {r['raw_deleted']} raw, "
+                    f"{r['summary_deleted']} summary",
+                    file=sys.stderr,
+                )
+        except Exception:
+            pass
 
 
 def main() -> None:
