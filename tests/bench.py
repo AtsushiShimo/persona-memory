@@ -237,6 +237,24 @@ SCENARIOS: list[Scenario] = [
         ],
     ),
     Scenario(
+        id=2,
+        name="一時的指示の非永続化 (今日だけ)",
+        setup=(
+            "今日のセッションだけ、コードブロックは Markdown じゃなくプレーンテキストで"
+            "返してください。後でメール貼り付けに使うので。"
+            "**これは今日のためだけの話**で、明日以降のセッションでは普通に Markdown "
+            "コードブロックで返して OK。"
+        ),
+        probe="簡単な Hello World の Python コードを書いて",
+        # 期待: 過去の「プレーンテキスト」一時指示を引き継がず、デフォルトの Markdown
+        # コードブロック (```python ... ```) で返す
+        keywords=["```"],
+        expected_facts=[
+            "Python コードが Markdown コードブロック形式 (```) で示されている",
+            "(過去の『今日だけプレーン』という一時指示が永続化されていない)",
+        ],
+    ),
+    Scenario(
         id=9,
         name="メタルール compliance (AskUserQuestion)",
         setup=(
@@ -269,6 +287,23 @@ SCENARIOS: list[Scenario] = [
         ],
     ),
     Scenario(
+        id=4,
+        name="固有名詞・略語の保持",
+        setup=(
+            "うちのプロダクトは『Mizuki』という名前のセルフホスト型ベクトル DB。"
+            "Mizuki は Qdrant と pgvector のハイブリッド構成で、月間 10 億ベクトルを扱う。"
+            "チーム内では『M』って略して呼ぶこともある。"
+        ),
+        probe="M の月間ベクトル数って何だっけ？",
+        # 期待: 「M」 = 「Mizuki」 と解決して 10 億ベクトルと答える
+        keywords=["Mizuki", "10 億"],
+        expected_facts=[
+            "M は Mizuki の略称である",
+            "Mizuki は月間 10 億ベクトルを扱う",
+            "Mizuki はセルフホスト型のベクトル DB である",
+        ],
+    ),
+    Scenario(
         id=5,
         name="矛盾・更新 (英→日コミットメッセージ好み変更)",
         setup=(
@@ -286,6 +321,22 @@ SCENARIOS: list[Scenario] = [
         ],
     ),
     Scenario(
+        id=6,
+        name="人間関係 (役職とスタンス)",
+        setup=(
+            "チームメンバー紹介。CTO の佐藤さんは技術判断の最終決定者で、"
+            "新技術の導入には保守的なタイプ。VP of Eng の鈴木さんは実行重視で、"
+            "CTO の事前承認を取らずに動くこともある。私 (山田) は両者の間で"
+            "調整役として動いてる。"
+        ),
+        probe="VP of Eng って誰だっけ？性格も教えて。",
+        keywords=["鈴木", "実行"],
+        expected_facts=[
+            "VP of Eng は鈴木さんである",
+            "鈴木さんは実行重視で、CTO の事前承認を取らずに動くこともある",
+        ],
+    ),
+    Scenario(
         id=7,
         name="ドメイン情報 (本番 DB 構成)",
         setup=(
@@ -298,6 +349,22 @@ SCENARIOS: list[Scenario] = [
             "本番 DB は Aurora MySQL 8.0.34",
             "リードレプリカは 3 つ",
             "最大接続数は 500",
+        ],
+    ),
+    Scenario(
+        id=8,
+        name="学習進捗・状態の度合い",
+        setup=(
+            "Rust の async / await を勉強中なんだけど、tokio の Pin と Send 周りで"
+            "詰まってる。実装は書けるが、なぜそうなってるのかが腹落ちしてない。"
+            "先週から手を付けて 2 週間目で、進捗としてはまだ半分くらい。"
+        ),
+        probe="私の Rust 学習どこまで進んでた？",
+        keywords=["tokio", "Pin", "詰ま", "半分"],
+        expected_facts=[
+            "ユーザーは Rust の async / await を学習中で、tokio の Pin と Send 周りで詰まっている",
+            "実装は書けるが原理面が腹落ちしていない",
+            "学習開始から 2 週間目で進捗は半分程度",
         ],
     ),
     # ─── 意地悪系 ───────────────────────────────────────

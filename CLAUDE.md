@@ -43,6 +43,14 @@
 
 **`persona` と `preference` の違い**: `persona` は「あなた (エージェント) の振る舞いに関する指示」、`preference` は「ユーザー自身の嗜好」。例えば「コードレビューは率直に指摘して」は `persona` (あなたへの指示)、「コーヒーは深煎り派」は `preference` (ユーザーの嗜好)。
 
+## プラグイン共通の default 行動指針
+
+すべての persona-memory install は、SessionStart 時に以下の default を auto-seed する:
+
+- `persona/response_brevity` (importance=9): 応答は端的に。核だけ即答、前置き・枕詞を省く。長文禁止、必要なら 1-2 行の補足。複数案は求められた時だけ。
+
+理由: 長い応答は読む手間と Anthropic トークン課金を増やすため。ユーザーが override したい場合は `write_fact("persona", "response_brevity", "...")` で同じ key に上書きすれば差し替わる。
+
 ## 振る舞いのルール
 
 ### 1. 自律的に記憶せよ (write_fact を勝手に呼べ)

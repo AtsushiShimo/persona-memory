@@ -30,6 +30,23 @@ if [ ! -f "$DB_PATH" ]; then
   exit 0
 fi
 
+# プラグイン共通の default 行動指針を auto-seed (既存 install の self-heal)。
+# 同じ category/key で既に値があれば INSERT OR IGNORE で何もしない。
+# importance=9 で SessionStart 時に必ず注入される。ユーザーが override したい
+# 場合は write_fact で同じ key に上書きすれば差し替わる。
+"$SQLITE" "$DB_PATH" >/dev/null 2>&1 <<'SQL' || true
+INSERT OR IGNORE INTO facts(category, key, value, importance, source, created_at, updated_at)
+VALUES (
+  'persona',
+  'response_brevity',
+  '応答は端的に。質問に対しては核だけ即答する。前置き・状況再確認・『ご質問の件ですが』等の枕詞を省く。長文は禁止、必要なら 1-2 行の補足のみ。複数案を並べるのは明示的に求められた時だけ。理由: 長い応答は読む手間とトークン課金を増やす。',
+  9,
+  'plugin_default_v1',
+  datetime('now', '+9 hours'),
+  datetime('now', '+9 hours')
+);
+SQL
+
 PERSONA=$("$SQLITE" "$DB_PATH" <<'SQL' 2>/dev/null
 .mode list
 .separator "|"

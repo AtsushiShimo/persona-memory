@@ -29,6 +29,8 @@ async def seed(
     address_user: str,
 ) -> None:
     # Ordered by importance to match the design priority ("役割が一番大事").
+    # response_brevity はプラグイン共通の default 行動指針 (全ペルソナに seed)。
+    # ユーザーが override したい場合は同じ key で write_fact すれば差し替わる。
     facts: list[tuple[str, str, str, int]] = [
         ("persona", "role", role, 9),
         ("persona", "identity", f"このペルソナの名前は『{name}』", 9),
@@ -37,6 +39,16 @@ async def seed(
         ("persona", "first_person", f"一人称は『{first_person}』", 8),
         ("persona", "speech_style", speech_style, 8),
         ("persona", "address_user", address_user, 8),
+        (
+            "persona",
+            "response_brevity",
+            "応答は端的に。質問に対しては核だけ即答する。"
+            "前置き・状況再確認・『ご質問の件ですが』等の枕詞を省く。"
+            "長文は禁止、必要なら 1-2 行の補足のみ。"
+            "複数案を並べるのは明示的に求められた時だけ。"
+            "理由: 長い応答は読む手間とトークン課金を増やす。",
+            9,
+        ),
     ]
 
     for cat, key, val, imp in facts:
