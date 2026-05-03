@@ -1,18 +1,12 @@
 #!/bin/sh
 # UserPromptSubmit hook for persona-memory.
-# Calls the local-LLM proxy to fetch relevant memories and inject them as
-# additionalContext, so the agent sees recall hints aligned with the user's
-# current message — without paying the token cost of a full memory dump.
-#
-# Per rule/model_weight_policy: read path → heavy model (only fires on large
-# recall sets via proxy_recall.compress_episodes).
-#
-# Designed to fail open: if anything goes wrong (Ollama down, DB missing),
-# exit 0 with no output and let the prompt pass through unchanged.
+# proxy_recall がローカル LLM で関連記憶を引き、additionalContext として注入。
+# fail-open: 何かあれば exit 0 で素通し。
 
 SCRIPT_HOME="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 export SCRIPT_HOME
 SCRIPT="$SCRIPT_HOME/scripts/proxy_recall.py"
+TIMING_LOG="${PERSONA_TIMING_LOG:-/tmp/persona_hook_timings.log}"
 
 [ -f "$SCRIPT" ] || exit 0
 
@@ -21,5 +15,16 @@ SCRIPT="$SCRIPT_HOME/scripts/proxy_recall.py"
 
 [ -x "${PERSONA_PYTHON:-}" ] || exit 0
 
-# Hook stdin is forwarded as-is to the recall script.
-exec "$PERSONA_PYTHON" "$SCRIPT"
+# 計測: hook 開始時刻
+T0_NS=$(date +%s%N)
+
+# proxy_recall を実行 (stdin はそのまま forward)
+"$PERSONA_PYTHON" "$SCRIPT"
+RC=$?
+
+# 計測: hook 終了時刻
+T1_NS=$(date +%s%N)
+ELAPSED_MS=$(( (T1_NS - T0_NS) / 1000000 ))
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] UserPromptSubmit hook ${ELAPSED_MS} ms (rc=$RC)" >> "$TIMING_LOG"
+
+exit $RC
