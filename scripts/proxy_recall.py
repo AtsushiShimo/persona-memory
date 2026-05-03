@@ -105,15 +105,20 @@ def store_to_keychain(label: str, value: str) -> bool:
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 EMBED_MODEL = os.environ.get("PERSONA_EMBED_MODEL", "nomic-embed-text")
 DB_PATH = os.environ.get("PERSONA_MEMORY_DB", "")
-# 注入量の上限。低 distance (= 高関連) かつ少数 (top_k=5) に絞ることで
-# context 膨張と低関連ノイズを同時に削る。fact / episode どちらも 0.7。
-TOP_K = int(os.environ.get("PERSONA_RECALL_TOP_K", "5"))
-DISTANCE_MAX = float(os.environ.get("PERSONA_RECALL_DISTANCE_MAX", "0.7"))
+# 想起方針 (rule/recall_priority): AI なのだから人間を遥かに超える記憶力を
+# 発揮することが目的。トークン消費 / context 肥大 / レイテンシは犠牲にして
+# 良いが、想起の取りこぼし / 重要 fact の押し出し / qualifier 欠落は不可。
+# このため top_k は十分に多く、distance threshold は緩く取る。長文も切らない。
+TOP_K = int(os.environ.get("PERSONA_RECALL_TOP_K", "15"))
+DISTANCE_MAX = float(os.environ.get("PERSONA_RECALL_DISTANCE_MAX", "1.0"))
 DECAY_LAMBDA = float(os.environ.get("PERSONA_RECALL_DECAY_LAMBDA", "0.08"))
 EMBED_TIMEOUT = float(os.environ.get("PERSONA_RECALL_TIMEOUT", "8.0"))
-EPISODE_TOP_K = int(os.environ.get("PERSONA_RECALL_EPISODE_TOP_K", "5"))
-EPISODE_DISTANCE_MAX = float(os.environ.get("PERSONA_RECALL_EPISODE_DISTANCE_MAX", "0.7"))
-EPISODE_SUMMARY_CAP = int(os.environ.get("PERSONA_RECALL_EPISODE_SUMMARY_CAP", "240"))
+EPISODE_TOP_K = int(os.environ.get("PERSONA_RECALL_EPISODE_TOP_K", "10"))
+EPISODE_DISTANCE_MAX = float(os.environ.get("PERSONA_RECALL_EPISODE_DISTANCE_MAX", "1.0"))
+# 0 にすると非圧縮表示時の per-episode 切り捨てを完全にオフ (生発話を全部出す)。
+EPISODE_SUMMARY_CAP = int(os.environ.get("PERSONA_RECALL_EPISODE_SUMMARY_CAP", "0"))
+# 同 category で席が埋まり重要 fact が押し出されるのを防ぐ。0 なら制約なし。
+PER_CATEGORY_CAP = int(os.environ.get("PERSONA_RECALL_PER_CATEGORY_CAP", "4"))
 
 # LLM compression at *read time*. Per rule/memory_save_policy:
 # write side stores everything raw; read side compresses on demand.
@@ -124,10 +129,13 @@ COMPRESS_MODEL = os.environ.get(
     "PERSONA_RECALL_COMPRESS_MODEL",
     os.environ.get("PERSONA_HEAVY_MODEL", "gemma3:12b"),
 )
-COMPRESS_TIMEOUT = float(os.environ.get("PERSONA_RECALL_COMPRESS_TIMEOUT", "10.0"))
-COMPRESS_TRIGGER_CHARS = int(os.environ.get("PERSONA_RECALL_COMPRESS_TRIGGER", "2400"))
-COMPRESS_TARGET_CHARS = int(os.environ.get("PERSONA_RECALL_COMPRESS_TARGET", "1200"))
-COMPRESS_PER_EP_CAP = int(os.environ.get("PERSONA_RECALL_COMPRESS_PER_EP_CAP", "4000"))
+# 圧縮タイムアウトは少し長めに。重量 LLM の生成時間を許容して情報を失わない。
+COMPRESS_TIMEOUT = float(os.environ.get("PERSONA_RECALL_COMPRESS_TIMEOUT", "30.0"))
+# 圧縮発火の閾値は緩めに (= 中規模までは生のまま注入)。
+COMPRESS_TRIGGER_CHARS = int(os.environ.get("PERSONA_RECALL_COMPRESS_TRIGGER", "6000"))
+# 圧縮先目標も大きめに。「短く要約しろ」より「重要情報を漏らすな」を優先。
+COMPRESS_TARGET_CHARS = int(os.environ.get("PERSONA_RECALL_COMPRESS_TARGET", "3000"))
+COMPRESS_PER_EP_CAP = int(os.environ.get("PERSONA_RECALL_COMPRESS_PER_EP_CAP", "8000"))
 
 # windows: ステージごとの age 上限 (日)。None は「無期限」、空リストは
 # 「常に除外」(persona は SessionStart で全件注入済みなのでここでは出さない)。
@@ -270,6 +278,7 @@ def select_facts(candidates: list[dict], now: datetime, top_k: int = TOP_K) -> l
 
     selected: list[dict] = []
     seen: set[tuple[str, str]] = set()
+    cat_count: dict[str, int] = {}
     for stage in range(max_stages):
         threshold = DISTANCE_MAX + 0.1 * stage
         pool: list[dict] = []
@@ -287,13 +296,33 @@ def select_facts(candidates: list[dict], now: datetime, top_k: int = TOP_K) -> l
                 continue
             pool.append(c)
         pool.sort(key=lambda x: x["_eff"])
+        # diversity 制約: 同 category 内で PER_CATEGORY_CAP まで先に取り、
+        # 余った席があれば 2 周目で cap を緩めて埋める。これで profile/basic
+        # のような単独で重要な fact が skill 系に席を奪われない。
         for c in pool:
             if len(selected) >= top_k:
                 break
+            cat = c["category"]
+            if PER_CATEGORY_CAP and cat_count.get(cat, 0) >= PER_CATEGORY_CAP:
+                continue
             selected.append(c)
             seen.add((c["category"], c["key"]))
+            cat_count[cat] = cat_count.get(cat, 0) + 1
         if len(selected) >= top_k:
             break
+
+    # 残席があれば cap を無視してでも埋める (取りこぼし > 偏り問題)
+    if len(selected) < top_k:
+        for c in candidates:
+            if len(selected) >= top_k:
+                break
+            ck = (c["category"], c["key"])
+            if ck in seen:
+                continue
+            if c["_eff"] > DISTANCE_MAX + 0.1 * (max_stages - 1):
+                continue
+            selected.append(c)
+            seen.add(ck)
 
     return selected
 
@@ -453,11 +482,15 @@ def main() -> None:
         else:
             lines = [f"## 関連する過去の議論 (episode: {len(eps)} 件)"]
             for e in eps:
-                text = (e.get("summary") or e.get("content") or "").strip().replace("\n", " ")
-                if len(text) > EPISODE_SUMMARY_CAP:
+                # rule/recall_priority: content (生発話の全文) を優先。
+                # summary は judge が削った要約版なので情報量が少ない。
+                text = (e.get("content") or e.get("summary") or "").strip()
+                if EPISODE_SUMMARY_CAP and len(text) > EPISODE_SUMMARY_CAP:
                     text = text[:EPISODE_SUMMARY_CAP] + "…"
+                # 改行は保持 (raw 発話の構造を残す)。先頭にインデントを付与。
+                indented = "\n  ".join(text.splitlines())
                 lines.append(
-                    f"- [{e['created_at']}] (distance={e['distance']:.3f})\n  {text}"
+                    f"- [{e['created_at']}] (distance={e['distance']:.3f})\n  {indented}"
                 )
             sections.append("\n".join(lines))
 
