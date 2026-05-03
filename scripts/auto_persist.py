@@ -504,8 +504,13 @@ async def persist_raw_turns(session_id: str, messages: list[dict]) -> int:
         # 極端に長い場合のみ末尾を切る (16KB)。普通の発話はそのまま入る。
         if len(content) > RAW_PER_MESSAGE_CAP:
             content = content[:RAW_PER_MESSAGE_CAP] + "…[truncated]"
-        # injection スクリーニング (失敗は safe 扱い、書き込みは止めない)
-        tainted = await classify_injection(content)
+        # injection スクリーニング: 外部由来 (raw_user) かつ短すぎないものだけ。
+        # - raw_assistant は Claude 自身の出力なので信頼 (LLM コスト削減)
+        # - 100 字未満は injection 不可能 (「了解」等の短返答を skip)
+        if role == "user" and len(content) >= 100:
+            tainted = await classify_injection(content)
+        else:
+            tainted = False
         summary_head = content[:200]
         if tainted:
             summary_head = INJECTION_MARKER + summary_head
