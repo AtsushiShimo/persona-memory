@@ -120,6 +120,11 @@ EPISODE_SUMMARY_CAP = int(os.environ.get("PERSONA_RECALL_EPISODE_SUMMARY_CAP", "
 # 同 category で席が埋まり重要 fact が押し出されるのを防ぐ。0 なら制約なし。
 PER_CATEGORY_CAP = int(os.environ.get("PERSONA_RECALL_PER_CATEGORY_CAP", "3"))
 
+# auto_persist.py が injection 検出時に summary に prefix する marker。
+# これが付いた episode は recall から完全除外する (再注入経由の indirect
+# prompt injection を防ぐ完全ブロック方式)。DB には監査用に残る。
+INJECTION_MARKER = "⚠️[TAINTED] "
+
 # LLM compression at *read time*. Per rule/memory_save_policy:
 # write side stores everything raw; read side compresses on demand.
 # Per rule/model_weight_policy: read-side compression uses the **heavy**
@@ -453,7 +458,13 @@ def main() -> None:
         if candidates
         else []
     )
-    eps = [e for e in episodes if e["distance"] <= EPISODE_DISTANCE_MAX][:EPISODE_TOP_K]
+    # 完全ブロック方式: auto_persist が tainted と判定した episode を除外。
+    # summary 先頭に INJECTION_MARKER が付いているものはスキップ。
+    eps = [
+        e for e in episodes
+        if e["distance"] <= EPISODE_DISTANCE_MAX
+        and not (e.get("summary") or "").startswith(INJECTION_MARKER)
+    ][:EPISODE_TOP_K]
 
     if not facts and not eps:
         return
