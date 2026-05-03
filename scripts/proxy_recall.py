@@ -105,11 +105,11 @@ def store_to_keychain(label: str, value: str) -> bool:
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 EMBED_MODEL = os.environ.get("PERSONA_EMBED_MODEL", "nomic-embed-text")
 DB_PATH = os.environ.get("PERSONA_MEMORY_DB", "")
-# 想起方針 (rule/recall_priority): AI なのだから人間を遥かに超える記憶力を
-# 発揮することが目的。トークン消費 / context 肥大 / レイテンシは犠牲にして
-# 良いが、想起の取りこぼし / 重要 fact の押し出し / qualifier 欠落は不可。
-# このため top_k は十分に多く、distance threshold は緩く取る。長文も切らない。
-TOP_K = int(os.environ.get("PERSONA_RECALL_TOP_K", "15"))
+# 想起方針 (rule/recall_priority): 優先順位は (1) 正しい記憶 > (2) Anthropic
+# トークン節約 > (3) ローカル LLM 仕事量。重労働は Ollama に押し付け、
+# Claude には圧縮された精選情報のみを渡す。recall は広く取り、curate を
+# heavy LLM (gemma3:12b) に任せ、最終 context は token-efficient に保つ。
+TOP_K = int(os.environ.get("PERSONA_RECALL_TOP_K", "10"))
 DISTANCE_MAX = float(os.environ.get("PERSONA_RECALL_DISTANCE_MAX", "1.0"))
 DECAY_LAMBDA = float(os.environ.get("PERSONA_RECALL_DECAY_LAMBDA", "0.08"))
 EMBED_TIMEOUT = float(os.environ.get("PERSONA_RECALL_TIMEOUT", "8.0"))
@@ -118,7 +118,7 @@ EPISODE_DISTANCE_MAX = float(os.environ.get("PERSONA_RECALL_EPISODE_DISTANCE_MAX
 # 0 にすると非圧縮表示時の per-episode 切り捨てを完全にオフ (生発話を全部出す)。
 EPISODE_SUMMARY_CAP = int(os.environ.get("PERSONA_RECALL_EPISODE_SUMMARY_CAP", "0"))
 # 同 category で席が埋まり重要 fact が押し出されるのを防ぐ。0 なら制約なし。
-PER_CATEGORY_CAP = int(os.environ.get("PERSONA_RECALL_PER_CATEGORY_CAP", "4"))
+PER_CATEGORY_CAP = int(os.environ.get("PERSONA_RECALL_PER_CATEGORY_CAP", "3"))
 
 # LLM compression at *read time*. Per rule/memory_save_policy:
 # write side stores everything raw; read side compresses on demand.
@@ -129,12 +129,15 @@ COMPRESS_MODEL = os.environ.get(
     "PERSONA_RECALL_COMPRESS_MODEL",
     os.environ.get("PERSONA_HEAVY_MODEL", "gemma3:12b"),
 )
-# 圧縮タイムアウトは少し長めに。重量 LLM の生成時間を許容して情報を失わない。
+# 圧縮タイムアウトは長めに。重量 LLM (gemma3:12b) の生成時間を許容。
 COMPRESS_TIMEOUT = float(os.environ.get("PERSONA_RECALL_COMPRESS_TIMEOUT", "30.0"))
-# 圧縮発火の閾値は緩めに (= 中規模までは生のまま注入)。
-COMPRESS_TRIGGER_CHARS = int(os.environ.get("PERSONA_RECALL_COMPRESS_TRIGGER", "6000"))
-# 圧縮先目標も大きめに。「短く要約しろ」より「重要情報を漏らすな」を優先。
-COMPRESS_TARGET_CHARS = int(os.environ.get("PERSONA_RECALL_COMPRESS_TARGET", "3000"))
+# 圧縮発火を早める (= ほぼ常に Ollama に curate させて Claude トークンを節約)。
+# 1500 字超えたら圧縮、それ以下は生のままでも軽いので素通し。
+COMPRESS_TRIGGER_CHARS = int(os.environ.get("PERSONA_RECALL_COMPRESS_TRIGGER", "1500"))
+# 圧縮先は短め (Claude へ渡すトークン量を抑制)。ただし qualifier / 修飾語の
+# 取りこぼしは禁止 (compress prompt 側で明示)。
+COMPRESS_TARGET_CHARS = int(os.environ.get("PERSONA_RECALL_COMPRESS_TARGET", "1500"))
+# Ollama 入力側は気前よく取る (作業は Ollama に押し付ける方針)。
 COMPRESS_PER_EP_CAP = int(os.environ.get("PERSONA_RECALL_COMPRESS_PER_EP_CAP", "8000"))
 
 # windows: ステージごとの age 上限 (日)。None は「無期限」、空リストは
@@ -365,6 +368,15 @@ def compress_episodes(user_prompt: str, episodes: list[dict]) -> str | None:
         "- ユーザーから出た指示・決定・好み・属性\n"
         "- 進行中タスクの現状と次に予定している作業\n"
         "- 未解決の問題・エラー\n\n"
+        "**正確性ルール (絶対遵守)**:\n"
+        "- **修飾語・限定句・但し書きを絶対に省略しない**。\n"
+        "  例: 「PM 含めて 8 人」の『PM 含めて』、「Java は 5 年だが避けたい派」の『が避けたい派』、\n"
+        "  「2026-05-02 時点では」の日付限定、「前職で」「現職で」の所属限定 を必ず保持。\n"
+        "- **数値はそのまま保持** (元の数字を変えない、丸めない、概算化しない)。\n"
+        "- **否定・忌避の表現を肯定形に書き換えない**。\n"
+        "  「Java は書きたくない」を「Java も書ける」と書いたら NG。元の極性を保つ。\n"
+        "- **訂正された古い情報を残さない**。「みく → さくらに訂正済み」のような場合、\n"
+        "  最新の正解 (さくら) のみ書き、古い誤情報 (みく) は混ぜない。\n\n"
         "**省くもの**: 雑談・繰り返し・本題と無関係な部分。\n"
         "**禁止**: 会話に書かれていない情報を補完・推測しない。本文のみ出力 (前置き・後書き不要)。\n\n"
         f"記録:\n{full}\n\n要約:"
