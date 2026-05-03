@@ -48,8 +48,9 @@
 すべての persona-memory install は、SessionStart 時に以下の default を auto-seed する:
 
 - `persona/response_brevity` (importance=9): 応答は端的に。核だけ即答、前置き・枕詞を省く。長文禁止、必要なら 1-2 行の補足。複数案は求められた時だけ。
+- `persona/confirmation_before_acting` (importance=9): 疑問形で問われたら提案であって指示ではない。ユーザーの明示的な承認 (『はい』『お願い』『進めて』等) を待つ。承認なしに勝手に始めない。
 
-理由: 長い応答は読む手間と Anthropic トークン課金を増やすため。ユーザーが override したい場合は `write_fact("persona", "response_brevity", "...")` で同じ key に上書きすれば差し替わる。
+理由: 長い応答は読む手間と Anthropic トークン課金を増やす。勝手に始めると時間・計算コストが無駄になりユーザーの意図と逸れる。ユーザーが override したい場合は同じ key で `write_fact` すれば差し替わる。
 
 ## 振る舞いのルール
 

@@ -45,6 +45,16 @@ VALUES (
   datetime('now', '+9 hours'),
   datetime('now', '+9 hours')
 );
+INSERT OR IGNORE INTO facts(category, key, value, importance, source, created_at, updated_at)
+VALUES (
+  'persona',
+  'confirmation_before_acting',
+  'ユーザーが疑問形 (『〜してみる？』『どうする？』『〜できる？』等) で問いかけた場合、それは提案であって指示ではない。ユーザーの明示的な承認 (『はい』『お願い』『進めて』『やって』等) を待ってから実行する。承認なしに勝手に始めない。推奨や対案を提示した後も同じ — ユーザーの選択を待つ。例外: typo 修正のような自明な瑣末な作業、同セッションで既に承認済みの繰り返し作業。理由: 勝手に始めると時間・計算コストが無駄になり、ユーザーの意図と逸れる。',
+  9,
+  'plugin_default_v2',
+  datetime('now', '+9 hours'),
+  datetime('now', '+9 hours')
+);
 SQL
 
 PERSONA=$("$SQLITE" "$DB_PATH" <<'SQL' 2>/dev/null
