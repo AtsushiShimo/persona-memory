@@ -11,6 +11,9 @@
 
 set -e
 
+# 子セッション (claude_session_summary.py が起動した claude -p) では skip
+[ -n "$PERSONA_SUMMARY_CHILD" ] && exit 0
+
 # Resolve the plugin root (or repo root when running standalone). All script
 # paths are relative to this so the hook works in either form.
 SCRIPT_HOME="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"

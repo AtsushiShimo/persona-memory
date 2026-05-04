@@ -3,6 +3,9 @@
 # proxy_recall がローカル LLM で関連記憶を引き、additionalContext として注入。
 # fail-open: 何かあれば exit 0 で素通し。
 
+# 子セッション (claude_session_summary.py が起動した claude -p) では skip
+[ -n "$PERSONA_SUMMARY_CHILD" ] && exit 0
+
 SCRIPT_HOME="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 export SCRIPT_HOME
 SCRIPT="$SCRIPT_HOME/scripts/proxy_recall.py"

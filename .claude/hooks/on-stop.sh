@@ -7,6 +7,9 @@
 # 解放され、heavy work (LLM 呼び出し / DB write / 埋め込み) は別プロセスで
 # 走る。これで次ターン処理を待たせない。
 
+# 子セッション (claude_session_summary.py が起動した claude -p) では skip
+[ -n "$PERSONA_SUMMARY_CHILD" ] && exit 0
+
 SCRIPT_HOME="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 export SCRIPT_HOME
 SCRIPT="$SCRIPT_HOME/scripts/auto_persist.py"
