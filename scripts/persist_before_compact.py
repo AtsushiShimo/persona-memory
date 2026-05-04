@@ -228,43 +228,10 @@ async def main_async() -> None:
         return
     recent = messages[-RECENT_TURNS:]
 
-    # 1) **生 dump (最優先・無条件)**: 直近ターンを丸ごと episode に保存。
-    #    LLM 失敗時もここで原文が残る。
+    # 生 dump のみ保存 (rule/memory_save_policy: 書き込みは生のまま、
+    # 要約は読み出し時 = compress_episodes に任せる)。
+    # 書き込み時要約はトークン節約と将来の詳細復元の両面で逆効果なので廃止。
     await persist_raw_dump(session_id, kind, recent, len(messages))
-
-    # 2) **要約 episode (補助)**: gemma3 で要約。失敗しても 1) で生発話は守られる。
-    summary = await summarize(recent)
-    if not summary:
-        # fail-loud: summarize 失敗 = Ollama 落ち or timeout。raw_dump は保存済み
-        # なので情報は失われない。stderr に一行残してオペレーターが気づけるように。
-        sys.stderr.write(
-            "[persona-memory] PreCompact/SessionEnd summary via Ollama failed; "
-            "raw dump saved, using tail fallback for summary\n"
-        )
-        # Fallback: tail concat so we save *something* even if the judge fails.
-        summary = "\n".join(
-            f"[{m['role']}] {m['content'][:200]}" for m in recent[-5:]
-        )
-
-    content = (
-        f"{kind} snapshot (trigger={trigger}, turns_total={len(messages)}, "
-        f"turns_summarized={len(recent)})\n\n{summary}"
-    )
-    try:
-        ep_id = db.append_episode(
-            session_id=session_id,
-            role="system",
-            content=content,
-            summary=summary,
-        )
-    except Exception:
-        return
-
-    try:
-        vec = await embedding.embed_text(summary)
-        db.write_episode_embedding(ep_id, embedding.pack_embedding(vec))
-    except Exception:
-        pass
 
     # SessionEnd でだけ episodes TTL GC を走らせる。PreCompact 中は context が
     # 詰まりがちで余計な仕事を増やしたくない。raw 系は 30 日で消し、summary は

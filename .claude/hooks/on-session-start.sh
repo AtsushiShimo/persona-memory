@@ -97,15 +97,16 @@ SQL
 )
 
 # Recent episodes — what was discussed/decided recently.
-# Exclude session-start markers (auto-generated boundary records) so genuine
-# work summaries aren't pushed out by repeated restarts.
+# 書き込み時要約は廃止 (rule/memory_save_policy)。生発話の content を
+# 冒頭 240 字だけ表示する形に切替。raw_user/raw_assistant/raw_dump 系を
+# 対象、session-start マーカーは除外。
 RECENT_EPISODES=$("$SQLITE" "$DB_PATH" <<'SQL' 2>/dev/null
 .mode list
 .separator "|"
-SELECT created_at, substr(summary, 1, 240)
+SELECT created_at, substr(content, 1, 240)
 FROM episodes
-WHERE summary IS NOT NULL AND summary != ''
-  AND summary NOT LIKE 'Session started at%'
+WHERE content IS NOT NULL AND content != ''
+  AND role IN ('raw_user', 'raw_assistant', 'raw_dump')
 ORDER BY created_at DESC
 LIMIT 5;
 SQL

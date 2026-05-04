@@ -594,14 +594,11 @@ async def main_async() -> None:
     result = await judge(slice_msgs)
     if result and isinstance(result, dict):
         facts = result.get("facts") or []
-        episode = result.get("episode") or {}
+        # 構造化 fact のみ保存。書き込み時の要約 episode は廃止
+        # (rule/memory_save_policy: 書き込みは生のみ、要約は読み出し時)。
+        # judge の episode.summary は無視する。
         if isinstance(facts, list):
             await persist_facts(facts)
-        # worth_saving フィルタは廃止: 要約があれば常に保存。要約の取捨は読み出し側で。
-        if isinstance(episode, dict):
-            summary = (episode.get("summary") or "").strip()
-            if summary:
-                await persist_episode(session_id, summary)
     else:
         # fail-loud: judge が None / 空を返した = Ollama 落ちか judge 解析失敗。
         # 生ターンは既に保存済みなのでデータ救命網は機能している。stderr に
