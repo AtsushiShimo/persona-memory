@@ -66,9 +66,20 @@ def extract_query_keywords(
     client: LLMClient,
     model: str = RECALL_MODEL,
 ) -> list[str]:
+    from scripts.debug.recall_log import (
+        is_enabled as _debug_enabled,
+        log_extract_prompt,
+        log_extract_response,
+    )
     prompt = build_prompt(content, buffer)
+    if _debug_enabled():
+        log_extract_prompt(prompt)
     try:
         response = client.generate(model, prompt)
     except Exception:
+        if _debug_enabled():
+            log_extract_response("(generate failed)")
         return []
+    if _debug_enabled():
+        log_extract_response(response)
     return parse_keywords(response)

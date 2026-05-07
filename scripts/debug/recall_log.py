@@ -67,8 +67,24 @@ def _emit(stage: str, level_required: str, payload: dict) -> None:
 
 # ── stage-specific ──────────────────────────────────────────────────────────
 
+def log_extract_prompt(prompt: str) -> None:
+    """level c: ローカル LLM への入力プロンプト全文"""
+    _emit("recall.extract.prompt", "c", {
+        "prompt": prompt,
+        "length": len(prompt),
+    })
+
+
+def log_extract_response(response: str) -> None:
+    """level c: ローカル LLM の生レスポンス"""
+    _emit("recall.extract.response", "c", {
+        "response": response,
+        "length": len(response),
+    })
+
+
 def log_keywords(content: str, buffer: list[dict], keywords: list[str]) -> None:
-    """level a: 抽出キーワードと意図"""
+    """level a: パース済みキーワードと意図"""
     _emit("recall.keywords", "a", {
         "content": content[:200],
         "buffer_n": len(buffer),
