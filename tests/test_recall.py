@@ -21,11 +21,15 @@ from scripts.write.persist import insert_new
 @dataclass
 class FakeRecallClient:
     keywords: list[str]
+    search_history: bool = False
     embedding_map: dict[str, list[float]] = field(default_factory=dict)
     default_embedding: list[float] = field(default_factory=lambda: [0.0] * 768)
 
     def generate(self, model: str, prompt: str) -> str:
-        return json.dumps(self.keywords, ensure_ascii=False)
+        return json.dumps(
+            {"keywords": self.keywords, "search_history": self.search_history},
+            ensure_ascii=False,
+        )
 
     def embed(self, model: str, text: str) -> list[float]:
         return list(self.embedding_map.get(text, self.default_embedding))
@@ -49,11 +53,11 @@ def test_build_prompt_includes_buffer_and_content():
 
 
 def test_parse_keywords_valid():
-    assert parse_keywords('["コーヒー","嗜好"]') == ["コーヒー", "嗜好"]
+    assert parse_keywords('{"keywords": ["コーヒー","嗜好"], "search_history": false}') == ["コーヒー", "嗜好"]
 
 
 def test_parse_keywords_with_code_fence():
-    assert parse_keywords('```json\n["go"]\n```') == ["go"]
+    assert parse_keywords('```json\n{"keywords": ["go"], "search_history": false}\n```') == ["go"]
 
 
 def test_parse_keywords_empty_for_short_utterance():

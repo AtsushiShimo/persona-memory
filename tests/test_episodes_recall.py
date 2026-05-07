@@ -11,7 +11,7 @@ from scripts.db.connection import connect
 from scripts.db.migrate import init_db
 from scripts.db.repo import save_episode
 from scripts.recall.format import to_additional_context
-from scripts.recall.run import _wants_episode_search, recall
+from scripts.recall.run import recall
 from scripts.recall.search import (
     RecalledEpisode,
     search_episodes_by_keywords,
@@ -20,12 +20,17 @@ from scripts.recall.search import (
 
 @dataclass
 class FakeRecallClient:
+    """LLM 応答を JSON {keywords, search_history} で返す mock."""
     keywords: list[str]
+    search_history: bool = False
     embedding_map: dict[str, list[float]] = field(default_factory=dict)
     default_embedding: list[float] = field(default_factory=lambda: [0.0] * 768)
 
     def generate(self, model, prompt):
-        return json.dumps(self.keywords, ensure_ascii=False)
+        return json.dumps(
+            {"keywords": self.keywords, "search_history": self.search_history},
+            ensure_ascii=False,
+        )
 
     def embed(self, model, text):
         return list(self.embedding_map.get(text, self.default_embedding))
@@ -40,31 +45,8 @@ def db(tmp_path: Path):
     conn.close()
 
 
-# ── trigger 検出 ────────────────────────────────────────────────────────────
-
-@pytest.mark.parametrize("text", [
-    "過去の会話を検索して",
-    "前回話した内容覚えてる?",
-    "履歴を見せて",
-    "やり取りを思い出して",
-    "あの時何話したっけ",
-    "先週の会話を辿りたい",
-    "previous conversation",
-    "conversation history",
-])
-def test_wants_episode_search_positive(text):
-    assert _wants_episode_search(text) is True
-
-
-@pytest.mark.parametrize("text", [
-    "コーヒーは深煎りが好き",
-    "今日の天気は?",
-    "Python のリスト内包表記教えて",
-    "",
-])
-def test_wants_episode_search_negative(text):
-    assert _wants_episode_search(text) is False
-
+# ── trigger 検出は LLM 判断に委譲したので test_recall.py 側の analyze_query
+#    系テストでカバー。ここでは episodes 検索が実際に動くか確認する。
 
 # ── search_episodes_by_keywords ─────────────────────────────────────────────
 
@@ -136,13 +118,15 @@ def test_format_no_section_when_both_empty():
 
 # ── recall full path with trigger ───────────────────────────────────────────
 
-def test_recall_searches_episodes_when_triggered(db):
+def test_recall_searches_episodes_when_llm_says_history(db):
+    """LLM が search_history=true を返した時に episodes が検索される."""
     save_episode(db, "user", "コーヒーは深煎りが好き", "s1")
-    save_episode(db, "user", "履歴を見せて", "s1")  # 現発話相当も episodes に入れておく
+    save_episode(db, "user", "履歴を見せて", "s1")
     db.commit()
 
     client = FakeRecallClient(
         keywords=["コーヒー"],
+        search_history=True,
         embedding_map={"コーヒー": [1.0] + [0.0] * 767},
     )
     out = recall(db, "履歴の中でコーヒーの話あった?", client)
@@ -150,14 +134,15 @@ def test_recall_searches_episodes_when_triggered(db):
     assert "深煎り" in out
 
 
-def test_recall_skips_episodes_without_trigger(db):
+def test_recall_skips_episodes_when_llm_says_no_history(db):
+    """LLM が search_history=false を返した時は episodes 検索しない."""
     save_episode(db, "user", "コーヒーは深煎りが好き", "s1")
     db.commit()
 
     client = FakeRecallClient(
         keywords=["コーヒー"],
+        search_history=False,
         embedding_map={"コーヒー": [1.0] + [0.0] * 767},
     )
-    # トリガー語なし → episodes は検索されない
     out = recall(db, "コーヒー何が好き?", client)
     assert "## 関連する過去の会話" not in out

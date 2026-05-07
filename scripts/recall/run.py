@@ -2,11 +2,13 @@
 
 入力: 現発話 + DB
 出力: additionalContext 文字列 (空文字 = 注入なし)
+
+仕様書 §5.1 に対応: LLM が発話を解析 (キーワード + 履歴参照意図).
+仕様書 §5.5 (要約) は **次の段階で実装予定**、現状は素のリストを返す。
 """
 from __future__ import annotations
 
 import os
-import re
 import sqlite3
 
 from scripts.debug.recall_log import (
@@ -15,7 +17,7 @@ from scripts.debug.recall_log import (
     log_hits,
     log_keywords,
 )
-from scripts.recall.extract import RECALL_MODEL, extract_query_keywords
+from scripts.recall.extract import RECALL_MODEL, analyze_query
 from scripts.recall.format import to_additional_context
 from scripts.recall.search import (
     bump_access_counts,
@@ -26,22 +28,6 @@ from scripts.shared.ollama import LLMClient
 
 EMBED_MODEL = os.environ.get("PERSONA_EMBED_MODEL", "nomic-embed-text")
 BUFFER_N = int(os.environ.get("PERSONA_BUFFER_N", "3"))
-
-# 「過去の会話を検索したい」 系の意図を検出するトリガー
-_EPISODE_TRIGGER_RE = re.compile(
-    r"(履歴|過去の会話|以前話した|前回|先日|先週|前に話|"
-    r"会話履歴|やり取り|conversation history|previous conversation|"
-    r"何話した|何を話した|どんな話を|あのとき|あの時|"
-    r"記憶を辿|ログを|過去ログ)",
-    re.IGNORECASE,
-)
-
-
-def _wants_episode_search(content: str) -> bool:
-    """ユーザー発話が『過去の会話を見たい』 系の意図か判定."""
-    if not content:
-        return False
-    return bool(_EPISODE_TRIGGER_RE.search(content))
 
 
 def fetch_buffer(conn: sqlite3.Connection, n: int) -> list[dict]:
@@ -60,21 +46,23 @@ def recall(
     recall_model: str = RECALL_MODEL,
     embed_model: str = EMBED_MODEL,
 ) -> str:
-    """ユーザー発話から関連 fact を引き、additionalContext を返す。"""
+    """ユーザー発話から関連記憶を引き、要約 additionalContext を返す。"""
     if not content.strip():
         return ""
     buffer = fetch_buffer(conn, buffer_n)
 
-    keywords = extract_query_keywords(content, buffer, client, model=recall_model)
+    # 1. LLM が発話を解析 (キーワード + 履歴参照意図)
+    analysis = analyze_query(content, buffer, client, model=recall_model)
     if debug_enabled():
-        log_keywords(content, buffer, keywords)
-    if not keywords:
+        log_keywords(content, buffer, analysis.keywords)
+    if not analysis.keywords:
         if debug_enabled():
             log_final_prompt("")
         return ""
 
+    # 2. 各キーワードを embed
     embeddings: list[list[float]] = []
-    for kw in keywords:
+    for kw in analysis.keywords:
         try:
             emb = client.embed(embed_model, kw)
             if emb:
@@ -86,9 +74,10 @@ def recall(
             log_final_prompt("")
         return ""
 
+    # 3. facts 検索
     hits = search(conn, embeddings)
     if debug_enabled():
-        log_hits(len(keywords), [
+        log_hits(len(analysis.keywords), [
             {
                 "fact_id": h.fact_id, "category": h.category, "key": h.key,
                 "distance": round(h.distance, 4), "importance": h.importance,
@@ -97,10 +86,10 @@ def recall(
             for h in hits
         ])
 
-    # episodes も検索する? (ユーザーが過去会話を辿りたい意図のとき)
+    # 4. episodes 検索 (LLM が「履歴参照」 と判断したとき)
     episodes_hits = []
-    if _wants_episode_search(content):
-        episodes_hits = search_episodes_by_keywords(conn, keywords)
+    if analysis.search_history:
+        episodes_hits = search_episodes_by_keywords(conn, analysis.keywords)
 
     if not hits and not episodes_hits:
         if debug_enabled():

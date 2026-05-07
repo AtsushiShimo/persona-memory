@@ -23,7 +23,10 @@ class FakeClient:
     embedding_map: dict[str, list[float]] = field(default_factory=dict)
 
     def generate(self, model, prompt):
-        return json.dumps(self.keywords, ensure_ascii=False)
+        return json.dumps(
+            {"keywords": self.keywords, "search_history": False},
+            ensure_ascii=False,
+        )
 
     def embed(self, model, text):
         return list(self.embedding_map.get(text, [0.0] * 768))
