@@ -65,22 +65,40 @@ rm -f "$DATA_DIR/$ACTIVE.db" "$DATA_DIR/$ACTIVE.config.env"
 rm -f "$DATA_DIR/active-persona"
 rm -f "$DATA_DIR/debug-recall.log"
 
-# settings.local.json から CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX を除去
+# .envrc から persona-memory ブロックを除去
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+if [ -z "$PLUGIN_ROOT" ] || [ ! -d "$PLUGIN_ROOT" ]; then
+  PLUGIN_ROOT=$(ls -d "$HOME"/.claude/plugins/cache/persona-memory/persona-memory/*/ 2>/dev/null \
+                | sort -V | tail -1 | sed 's|/$||')
+fi
+case "$PLUGIN_ROOT" in
+  */plugins/cache/*/*/*)
+    _plugin_dir="$(dirname "$PLUGIN_ROOT")"
+    _market_dir="$(dirname "$_plugin_dir")"
+    _plugins_root="$(dirname "$(dirname "$_market_dir")")"
+    VENV_HOME="$_plugins_root/data/$(basename "$_market_dir")-$(basename "$_plugin_dir")"
+    ;;
+  *) VENV_HOME="$PLUGIN_ROOT" ;;
+esac
+if [ -n "$PLUGIN_ROOT" ] && [ -x "$VENV_HOME/.venv/bin/python" ]; then
+  "$VENV_HOME/.venv/bin/python" "$PLUGIN_ROOT/scripts/envrc_manage.py" remove \
+    "$PROJECT_DIR/.envrc" || true
+fi
+
+# (旧 0.4.7 の名残) settings.local.json から env を除去
 SETTINGS_FILE="$PROJECT_DIR/.claude/settings.local.json"
 if [ -f "$SETTINGS_FILE" ]; then
-  python3 - "$SETTINGS_FILE" <<'PY'
+  python3 - "$SETTINGS_FILE" <<'PY' || true
 import json, pathlib, sys
 fp = pathlib.Path(sys.argv[1])
 data = json.loads(fp.read_text(encoding="utf-8"))
 env = data.get("env") or {}
-removed = env.pop("CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX", None)
+env.pop("CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX", None)
 if env:
     data["env"] = env
 elif "env" in data:
     del data["env"]
 fp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-if removed:
-    print(f"[ok] {fp} から CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX を除去")
 PY
 fi
 
@@ -97,10 +115,29 @@ DATA_DIR="$PROJECT_DIR/.persona-memory"
 
 rm -rf "$DATA_DIR"
 
-# settings.local.json から CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX を除去
+# .envrc / settings.local.json の persona-memory 関連クリーンアップ
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+if [ -z "$PLUGIN_ROOT" ] || [ ! -d "$PLUGIN_ROOT" ]; then
+  PLUGIN_ROOT=$(ls -d "$HOME"/.claude/plugins/cache/persona-memory/persona-memory/*/ 2>/dev/null \
+                | sort -V | tail -1 | sed 's|/$||')
+fi
+case "$PLUGIN_ROOT" in
+  */plugins/cache/*/*/*)
+    _plugin_dir="$(dirname "$PLUGIN_ROOT")"
+    _market_dir="$(dirname "$_plugin_dir")"
+    _plugins_root="$(dirname "$(dirname "$_market_dir")")"
+    VENV_HOME="$_plugins_root/data/$(basename "$_market_dir")-$(basename "$_plugin_dir")"
+    ;;
+  *) VENV_HOME="$PLUGIN_ROOT" ;;
+esac
+if [ -n "$PLUGIN_ROOT" ] && [ -x "$VENV_HOME/.venv/bin/python" ]; then
+  "$VENV_HOME/.venv/bin/python" "$PLUGIN_ROOT/scripts/envrc_manage.py" remove \
+    "$PROJECT_DIR/.envrc" || true
+fi
+
 SETTINGS_FILE="$PROJECT_DIR/.claude/settings.local.json"
 if [ -f "$SETTINGS_FILE" ]; then
-  python3 - "$SETTINGS_FILE" <<'PY'
+  python3 - "$SETTINGS_FILE" <<'PY' || true
 import json, pathlib, sys
 fp = pathlib.Path(sys.argv[1])
 data = json.loads(fp.read_text(encoding="utf-8"))

@@ -298,25 +298,49 @@ PYTHONPATH="$PLUGIN_ROOT" \
   --first-person "<Q5>" --speech-style "<Q6>" \
   --address-user "<Q4>"
 
-# 5. リモートセッション名プレフィックスを project settings に書く
-#    Claude Code 公式の env var: CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX
-#    /remote-control で立てた session 名がモバイルアプリに表示される時、
-#    persona 名で prefix される (例: "凛: Shortcake craving discussion")。
-mkdir -p "$PROJECT_DIR/.claude"
+# 5. リモートセッション名プレフィックスを direnv 経由で連携 (.envrc)
+#    `claude remote-control` のセッション名 `<prefix>-<adj>-<noun>` の prefix を
+#    アクティブペルソナ名に連動させる。env var
+#    CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX は claude 起動時に評価されるので、
+#    親シェルでの export が必要 → direnv で project 入室時に動的 export。
+"$VENV_HOME/.venv/bin/python" "$PLUGIN_ROOT/scripts/envrc_manage.py" add \
+  "$PROJECT_DIR/.envrc"
+
+# direnv の検出 + 案内
+if command -v direnv >/dev/null 2>&1; then
+  echo "[ok] .envrc を生成/更新しました。次のステップで 'direnv allow' を実行してください:"
+  echo "       cd $PROJECT_DIR && direnv allow"
+else
+  echo "[warn] direnv が未インストールです。.envrc は生成しましたが、direnv が"
+  echo "       無いと自動 export されません。インストール手順:"
+  echo "         brew install direnv"
+  echo "         (zsh の場合) echo 'eval \"\$(direnv hook zsh)\"' >> ~/.zshrc"
+  echo "       インストール後、'cd $PROJECT_DIR && direnv allow' で有効化。"
+  echo "       direnv を入れない場合は手動 export で代替可:"
+  echo "         export CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX='$NAME'"
+fi
+
+# 6. (旧 0.4.7 の名残) settings.local.json に env が残っていれば削除する
+#    あれは claude remote-control daemon に届かない仕組みだったので無効
 SETTINGS_FILE="$PROJECT_DIR/.claude/settings.local.json"
-"$VENV_HOME/.venv/bin/python" - "$SETTINGS_FILE" "$NAME" <<'PY'
+if [ -f "$SETTINGS_FILE" ]; then
+  "$VENV_HOME/.venv/bin/python" - "$SETTINGS_FILE" <<'PY'
 import json, pathlib, sys
 fp = pathlib.Path(sys.argv[1])
-prefix = sys.argv[2]
-data = json.loads(fp.read_text(encoding="utf-8")) if fp.exists() else {}
+data = json.loads(fp.read_text(encoding="utf-8"))
 env = data.get("env") or {}
-env["CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX"] = f"{prefix}: "
-data["env"] = env
+removed = env.pop("CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX", None)
+if env:
+    data["env"] = env
+elif "env" in data:
+    del data["env"]
 fp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-print(f"[ok] {fp} に CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX={prefix}: を設定しました")
+if removed:
+    print(f"[cleanup] 古い settings.local.json から env を除去 (direnv 経路に移行)")
 PY
+fi
 
-# 6. .gitignore に .persona-memory/ を追加するか提案 (個人記憶を git に上げない)
+# 7. .gitignore に .persona-memory/ を追加するか提案 (個人記憶を git に上げない)
 if [ -d "$PROJECT_DIR/.git" ] && ! grep -q "^\.persona-memory/$" "$PROJECT_DIR/.gitignore" 2>/dev/null; then
   echo ".persona-memory/" >> "$PROJECT_DIR/.gitignore"
   echo "[ok] added .persona-memory/ to $PROJECT_DIR/.gitignore"
