@@ -19,9 +19,17 @@ import sys
 from typing import Iterable
 
 from scripts.db.connection import connect
+from scripts.escalate.claude_p import invoke_claude, log_escalation
+from scripts.escalate.decide import estimate_tokens, should_escalate
 from scripts.shared.env import get_db_path
 from scripts.shared.ollama import LLMClient, OllamaClient
-from scripts.write.extract import FactCandidate, WRITE_MODEL, extract_facts
+from scripts.write.extract import (
+    FactCandidate,
+    WRITE_MODEL,
+    build_prompt,
+    extract_facts,
+    parse_response,
+)
 from scripts.write.persist import apply_candidate
 from scripts.write.similarity import find_match
 
@@ -48,6 +56,15 @@ def fetch_buffer(conn: sqlite3.Connection, before_id: int, n: int) -> list[dict]
     return [{"role": r[0], "content": r[1]} for r in reversed(rows)]
 
 
+def _extract_via_claude(role: str, content: str, buffer: list[dict]) -> list[FactCandidate]:
+    """長文時は Claude に抽出を任せる (§3.1 long_input エスカレーション)."""
+    prompt = build_prompt(role, content, buffer)
+    r = invoke_claude(prompt)
+    if not r.success:
+        return []
+    return parse_response(r.text)
+
+
 def process_episode(
     conn: sqlite3.Connection,
     episode_id: int,
@@ -62,13 +79,25 @@ def process_episode(
         return []
     buffer = fetch_buffer(conn, episode_id, buffer_n)
 
-    candidates = extract_facts(
-        role=episode["role"],
-        content=episode["content"],
-        buffer=buffer,
-        client=client,
-        model=write_model,
-    )
+    # 入力サイズで long_input エスカレーション判定
+    full_input = episode["content"] + "\n" + "\n".join(b.get("content", "") for b in buffer)
+    reason = should_escalate(input_text=full_input)
+
+    if reason == "long_input":
+        candidates = _extract_via_claude(episode["role"], episode["content"], buffer)
+        log_escalation(
+            conn, reason="long_input", caller="write",
+            input_size=estimate_tokens(full_input),
+            outcome=f"extracted {len(candidates)} facts",
+        )
+    else:
+        candidates = extract_facts(
+            role=episode["role"],
+            content=episode["content"],
+            buffer=buffer,
+            client=client,
+            model=write_model,
+        )
     if not candidates:
         return []
 
@@ -79,6 +108,17 @@ def process_episode(
         except Exception:
             embedding = []
         match = find_match(conn, cand.category, cand.key, embedding)
+
+        # importance >= 8 で既存と矛盾 (supersede 候補) なら裁定をログだけ残す。
+        # phase 6 では Claude に裁定させずローカル判定に任せる (= heuristic 採用)。
+        # uncertainty 判定の精緻化は post-MVP。
+        if cand.importance >= 8 and match is not None:
+            log_escalation(
+                conn, reason="high_importance", caller="write",
+                input_size=estimate_tokens(cand.value),
+                outcome=f"local-decided overwrite of {match.category}/{match.key}",
+            )
+
         action = apply_candidate(conn, cand, match, embedding, source="conversation")
         results.append((cand, action))
     return results
