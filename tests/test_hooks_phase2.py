@@ -20,6 +20,7 @@ def _run_hook(script: str, payload: dict, db_path: Path) -> subprocess.Completed
     env = os.environ.copy()
     env["PERSONA_MEMORY_DB"] = str(db_path)
     env["PYTHONPATH"] = str(ROOT)
+    env["PERSONA_WRITE_DISABLE"] = "1"  # phase 3 spawn を無効化
     return subprocess.run(
         [PYTHON, str(ROOT / "scripts" / "hooks" / script)],
         input=json.dumps(payload).encode(),
