@@ -8,6 +8,12 @@ from __future__ import annotations
 import os
 import sqlite3
 
+from scripts.debug.recall_log import (
+    is_enabled as debug_enabled,
+    log_final_prompt,
+    log_hits,
+    log_keywords,
+)
 from scripts.recall.extract import RECALL_MODEL, extract_query_keywords
 from scripts.recall.format import to_additional_context
 from scripts.recall.search import bump_access_counts, search
@@ -39,7 +45,11 @@ def recall(
     buffer = fetch_buffer(conn, buffer_n)
 
     keywords = extract_query_keywords(content, buffer, client, model=recall_model)
+    if debug_enabled():
+        log_keywords(content, buffer, keywords)
     if not keywords:
+        if debug_enabled():
+            log_final_prompt("")
         return ""
 
     embeddings: list[list[float]] = []
@@ -51,11 +61,27 @@ def recall(
         except Exception:
             continue
     if not embeddings:
+        if debug_enabled():
+            log_final_prompt("")
         return ""
 
     hits = search(conn, embeddings)
+    if debug_enabled():
+        log_hits(len(keywords), [
+            {
+                "fact_id": h.fact_id, "category": h.category, "key": h.key,
+                "distance": round(h.distance, 4), "importance": h.importance,
+                "score": round(h.score, 4),
+            }
+            for h in hits
+        ])
     if not hits:
+        if debug_enabled():
+            log_final_prompt("")
         return ""
 
     bump_access_counts(conn, [h.fact_id for h in hits])
-    return to_additional_context(hits)
+    additional_context = to_additional_context(hits)
+    if debug_enabled():
+        log_final_prompt(additional_context)
+    return additional_context
