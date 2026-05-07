@@ -4,10 +4,21 @@
 seed され、ここには含まれない。ここに書かれているのは **すべてのペルソナで
 共通の default 行動規範**。
 
-`/persona-memory:upgrade` はこのリストだけを idempotent に refresh する。
+`/persona-memory:upgrade` は:
+- DEFAULT_BOOT_FACTS を idempotent に refresh
+- DEPRECATED_BOOT_FACTS にある (category, key) の active 行を superseded に降格
 ペルソナ固有属性や episodes / 他 category facts は触らない。
 """
 from __future__ import annotations
+
+# 過去に default として焼いたが廃止になったもの。
+# /persona-memory:upgrade で active → superseded に降格される。
+# 後方互換のため key は永久に残す (二度と同じ key を新規 default にしない)。
+DEPRECATED_BOOT_FACTS: list[tuple[str, str]] = [
+    # (category, key)
+    ("rule", "session_title_prefix"),       # 0.4.11 で追加 → 0.4.12 で撤回
+    ("rule", "remote_session_title_prefix"),  # 0.4.5 で追加 → 0.4.6 で revert (念のため)
+]
 
 # (category, key, value, importance)
 DEFAULT_BOOT_FACTS: list[tuple[str, str, str, int]] = [

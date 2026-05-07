@@ -45,6 +45,54 @@ def test_upgrade_unchanged_after_fresh_seed(db_path: Path):
     assert counts["inserted"] == 0
     assert counts["updated"] == 0
     assert counts["unchanged"] == len(DEFAULT_BOOT_FACTS)
+    assert counts["deprecated"] == 0
+
+
+def test_upgrade_deprecates_old_default(db_path: Path):
+    """DEPRECATED_BOOT_FACTS にある active 行を superseded に降格."""
+    with patch("scripts.seed_persona.OllamaClient") as Mock:
+        Mock.return_value.embed.return_value = []
+        seed(db_path, **_seed_kwargs())
+
+    # 過去のバージョンが焼いた廃止 fact を仕込む
+    conn = connect(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO facts(category, key, value, importance) "
+            "VALUES ('rule', 'session_title_prefix', 'OLD_VALUE', 9)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with patch("scripts.upgrade.OllamaClient") as Mock:
+        Mock.return_value.embed.return_value = []
+        counts = upgrade(db_path)
+
+    assert counts["deprecated"] >= 1
+
+    conn = connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT status FROM facts "
+            "WHERE category='rule' AND key='session_title_prefix'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == "superseded"
+
+
+def test_upgrade_deprecate_no_op_when_absent(db_path: Path):
+    """廃止 fact が DB に無ければ deprecated カウントは 0."""
+    with patch("scripts.seed_persona.OllamaClient") as Mock:
+        Mock.return_value.embed.return_value = []
+        seed(db_path, **_seed_kwargs())
+
+    with patch("scripts.upgrade.OllamaClient") as Mock:
+        Mock.return_value.embed.return_value = []
+        counts = upgrade(db_path)
+
+    assert counts["deprecated"] == 0
 
 
 def test_upgrade_inserts_missing_defaults(db_path: Path):

@@ -23,7 +23,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from scripts.boot.defaults import DEFAULT_BOOT_FACTS
+from scripts.boot.defaults import DEFAULT_BOOT_FACTS, DEPRECATED_BOOT_FACTS
 from scripts.db.connection import connect
 from scripts.shared.embedding import pack
 from scripts.shared.ollama import OllamaClient
@@ -32,11 +32,30 @@ EMBED_MODEL = os.environ.get("PERSONA_EMBED_MODEL", "nomic-embed-text")
 
 
 def upgrade(db_path: Path) -> dict[str, int]:
-    """戻り値: {'inserted', 'updated', 'unchanged'} のカウント."""
-    counts = {"inserted": 0, "updated": 0, "unchanged": 0}
+    """戻り値: {'inserted', 'updated', 'unchanged', 'deprecated'} のカウント."""
+    counts = {"inserted": 0, "updated": 0, "unchanged": 0, "deprecated": 0}
     conn = connect(db_path)
     client = OllamaClient()
     try:
+        # 1. 廃止された default を active → superseded に降格
+        for category, key in DEPRECATED_BOOT_FACTS:
+            row = conn.execute(
+                "SELECT id FROM facts "
+                "WHERE category=? AND key=? AND status='active'",
+                (category, key),
+            ).fetchone()
+            if row is None:
+                continue
+            conn.execute(
+                "UPDATE facts SET status='superseded', "
+                "  updated_at=datetime('now', '+9 hours') "
+                "WHERE id=?",
+                (row[0],),
+            )
+            conn.commit()
+            counts["deprecated"] += 1
+            print(f"  deprecated [{category}/{key}]")
+        # 2. 現行 default を idempotent に refresh
         for category, key, value, importance in DEFAULT_BOOT_FACTS:
             row = conn.execute(
                 "SELECT id, value, importance FROM facts "
@@ -126,7 +145,8 @@ def main() -> None:
     print()
     print(
         f"upgrade summary: inserted={counts['inserted']}, "
-        f"updated={counts['updated']}, unchanged={counts['unchanged']}"
+        f"updated={counts['updated']}, unchanged={counts['unchanged']}, "
+        f"deprecated={counts['deprecated']}"
     )
 
 
