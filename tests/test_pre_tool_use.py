@@ -35,6 +35,14 @@ def _is_denied(stdout: str) -> bool:
     )
 
 
+def _denial_reason(stdout: str) -> str:
+    try:
+        data = json.loads(stdout)
+        return data.get("hookSpecificOutput", {}).get("permissionDecisionReason", "")
+    except json.JSONDecodeError:
+        return ""
+
+
 # ── ブロックすべきケース ────────────────────────────────────────────────────
 
 def test_block_sqlite3_persona_db():
@@ -182,3 +190,121 @@ def test_block_env_prefix_sqlite3():
         "tool_input": {"command": "DEBUG=1 sqlite3 .persona-memory/foo.db .schema"},
     })
     assert _is_denied(out)
+
+
+# ── Claude Code auto-memory ブロック ────────────────────────────────────────
+
+def test_block_write_to_auto_memory():
+    rc, out, _ = _run_hook({
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/Users/x/.claude/projects/-Users-x-proj/memory/notes.md",
+            "content": "...",
+        },
+    })
+    assert _is_denied(out)
+    assert "auto-memory" in _denial_reason(out)
+
+
+def test_block_edit_in_auto_memory():
+    rc, out, _ = _run_hook({
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": "/Users/x/.claude/projects/-Users-x-proj/memory/MEMORY.md",
+            "old_string": "x", "new_string": "y",
+        },
+    })
+    assert _is_denied(out)
+
+
+def test_block_multiedit_in_auto_memory():
+    rc, out, _ = _run_hook({
+        "tool_name": "MultiEdit",
+        "tool_input": {
+            "file_path": "/Users/x/.claude/projects/-Users-x-proj/memory/foo.md",
+            "edits": [],
+        },
+    })
+    assert _is_denied(out)
+
+
+def test_block_read_from_auto_memory():
+    rc, out, _ = _run_hook({
+        "tool_name": "Read",
+        "tool_input": {
+            "file_path": "/Users/x/.claude/projects/-Users-x-proj/memory/MEMORY.md",
+        },
+    })
+    assert _is_denied(out)
+    assert "auto-memory" in _denial_reason(out)
+
+
+def test_block_bash_write_to_auto_memory():
+    """`echo ... >> ~/.claude/projects/.../memory/...` も止める."""
+    rc, out, _ = _run_hook({
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": "echo 'note' >> ~/.claude/projects/-Users-x-proj/memory/note.md",
+        },
+    })
+    assert _is_denied(out)
+
+
+def test_block_bash_mkdir_in_auto_memory():
+    rc, out, _ = _run_hook({
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": "mkdir -p ~/.claude/projects/-Users-x-proj/memory/notes",
+        },
+    })
+    assert _is_denied(out)
+
+
+# ── auto-memory 関連の false positive 防止 ──────────────────────────────────
+
+def test_allow_write_to_normal_md():
+    rc, out, _ = _run_hook({
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/Users/x/some/proj/README.md",
+            "content": "...",
+        },
+    })
+    assert out.strip() == ""
+
+
+def test_allow_read_outside_auto_memory():
+    """.claude/projects/ 配下でも memory/ ではないファイルは OK."""
+    rc, out, _ = _run_hook({
+        "tool_name": "Read",
+        "tool_input": {
+            "file_path": "/Users/x/.claude/projects/-Users-x-proj/sessions/abc.jsonl",
+        },
+    })
+    assert out.strip() == ""
+
+
+def test_allow_string_mention_of_auto_memory_in_commit():
+    """git commit でメッセージ内に auto-memory を言及するのは OK."""
+    rc, out, _ = _run_hook({
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": "git commit -m 'block writes to ~/.claude/projects/x/memory'",
+        },
+    })
+    assert out.strip() == ""
+
+
+def test_allow_complex_commit_message_with_mkdir_and_path():
+    """0.4.17 のコミットでブロックされた回帰: コミットメッセージに mkdir と
+    .claude/projects/.../memory/ 文字列が両方含まれていても通す."""
+    msg = (
+        "release: 0.4.17\n"
+        "- Bash で >>, tee, mkdir で auto-memory に書く workaround も deny\n"
+        "- 経路: ~/.claude/projects/<project>/memory/ 配下"
+    )
+    rc, out, _ = _run_hook({
+        "tool_name": "Bash",
+        "tool_input": {"command": f"git commit -m \"{msg}\""},
+    })
+    assert out.strip() == "", f"unexpectedly blocked: {out}"

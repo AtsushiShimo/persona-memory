@@ -228,6 +228,39 @@ PERSONA_JUDGE_MODEL="gemma3:4b" \
 
 ---
 
+## auto-memory 削除 + recap 無効化の案内 (Claude Code 標準機能との衝突回避)
+
+セットアップ実行 (下記) 前後に、ユーザーに以下を **明示的に確認・案内** すること:
+
+### auto-memory が検出された場合 (Step 5 の出力で `Claude Code 標準 auto-memory を検出` が出た時)
+
+AskUserQuestion で:
+
+- **header**: `auto-memory`
+- **question**: "Claude Code 標準 auto-memory ディレクトリ (`<検出パス>`) を削除しますか? 並存すると記憶が分散します"
+- **multiSelect**: false
+- **options**:
+  1. label: `削除する` / description: "ファイル全削除。これ以降は persona-memory DB に集約される"
+  2. label: `残す` / description: "今のまま並存させる (記憶分散リスクあり)"
+
+「削除する」 を選んだら:
+
+```bash
+rm -rf "$CC_MEMORY_DIR"
+echo "[ok] $CC_MEMORY_DIR を削除しました"
+```
+
+### recap (会話要約) 無効化の案内
+
+Claude Code 標準の **recap 機能** も auto-memory と同じ理由で無効化推奨。
+セットアップ完了報告の **末尾に必ず** 以下の案内を含めること:
+
+> 📌 **追加の手動設定をお願いします**:
+>
+> Claude Code 標準の "recap" 機能 (会話末尾に直近トピックを表示する機能) も
+> persona-memory と並存すると記憶経路が分散します。**`/config`** で
+> "Show recaps" 等の項目を **無効化** してください。
+
 ## セットアップ実行
 
 7 問すべて揃ったら、以下を順に Bash で実行:
@@ -298,7 +331,23 @@ PYTHONPATH="$PLUGIN_ROOT" \
   --first-person "<Q5>" --speech-style "<Q6>" \
   --address-user "<Q4>"
 
-# 5. .gitignore に .persona-memory/ を追加するか提案 (個人記憶を git に上げない)
+# 5. Claude Code 標準 auto-memory との衝突チェック
+#    persona-memory プラグインは独自 DB に記憶を集約する方針なので、
+#    並行して Claude Code 標準 auto-memory が動いていると記憶が分散する。
+#    init 時に既存の auto-memory を削除する案内を出す (/upgrade では触らない)。
+PROJECT_KEY=$(printf '%s' "$PROJECT_DIR" | sed 's|/|-|g')
+CC_MEMORY_DIR="$HOME/.claude/projects/${PROJECT_KEY}/memory"
+if [ -d "$CC_MEMORY_DIR" ] && [ -n "$(ls -A "$CC_MEMORY_DIR" 2>/dev/null)" ]; then
+  echo
+  echo "===== ⚠️ Claude Code 標準 auto-memory を検出 ====="
+  echo "  パス: $CC_MEMORY_DIR"
+  echo "  ファイル数: $(ls -A "$CC_MEMORY_DIR" 2>/dev/null | wc -l | tr -d ' ')"
+  echo
+  echo "  persona-memory プラグインは独自 DB に記憶を集約します。"
+  echo "  auto-memory が並存していると記憶が分散して呼び出せなくなります。"
+fi
+
+# 6. .gitignore に .persona-memory/ を追加するか提案 (個人記憶を git に上げない)
 if [ -d "$PROJECT_DIR/.git" ] && ! grep -q "^\.persona-memory/$" "$PROJECT_DIR/.gitignore" 2>/dev/null; then
   echo ".persona-memory/" >> "$PROJECT_DIR/.gitignore"
   echo "[ok] added .persona-memory/ to $PROJECT_DIR/.gitignore"
