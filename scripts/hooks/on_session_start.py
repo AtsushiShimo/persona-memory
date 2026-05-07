@@ -1,9 +1,9 @@
-"""SessionStart hook 同期処理 (phase 5 範囲).
+"""SessionStart hook 同期処理 (phase 8 範囲).
 
 実行内容:
 1. boot 層 (persona / rule) 全件を additionalContext で注入
 2. condense 閾値チェック (50 facts / 5000 tokens 超なら stderr 警告)
-3. 未処理 episode 再抽出 detach 起動 ← phase 8 で追加
+3. 未処理 episode 再抽出 detach 起動 (耐障害性: 前回 write が落ちても次回起動時に救済)
 
 fail-open: 例外 / 未初期化 DB は exit 0 で素通し。
 """
@@ -19,7 +19,9 @@ from scripts.boot.inject import (
     format_boot_facts,
 )
 from scripts.db.connection import connect
+from scripts.hooks.spawn import spawn_write
 from scripts.shared.env import get_db_path
+from scripts.write.run import fetch_unprocessed_episode_ids
 
 
 def _emit_additional_context(text: str) -> None:
@@ -45,6 +47,7 @@ def main() -> int:
         sys.stderr.write(f"[persona-memory] db open failed: {e}\n")
         return 0
 
+    pending_ids: list[int] = []
     try:
         warn = condense_warning_if_needed(conn)
         if warn:
@@ -54,10 +57,22 @@ def main() -> int:
         text = format_boot_facts(facts)
         # SessionStart で再注入したら dirty はクリア
         clear_dirty(conn)
+
+        # 未処理 episode の検出 (前回 write が落ちた場合のリカバリ)
+        pending_ids = fetch_unprocessed_episode_ids(conn)
     finally:
         conn.close()
 
     _emit_additional_context(text)
+
+    # 未処理があれば detach で write を流す (本処理 = 注入は完了済み)
+    if pending_ids:
+        sys.stderr.write(
+            f"[persona-memory] resuming {len(pending_ids)} unprocessed episode(s) "
+            f"from previous session\n"
+        )
+        spawn_write(pending_ids)
+
     return 0
 
 

@@ -19,6 +19,7 @@ import sys
 from typing import Iterable
 
 from scripts.db.connection import connect
+from scripts.db.repo import get_meta, set_meta
 from scripts.escalate.claude_p import invoke_claude, log_escalation
 from scripts.escalate.decide import estimate_tokens, should_escalate
 from scripts.shared.env import get_db_path
@@ -35,6 +36,31 @@ from scripts.write.similarity import find_match
 
 EMBED_MODEL = os.environ.get("PERSONA_EMBED_MODEL", "nomic-embed-text")
 DEFAULT_BUFFER_N = int(os.environ.get("PERSONA_BUFFER_N", "3"))
+PROCESSED_META_KEY = "write_processed_max_id"
+
+
+def get_processed_max_id(conn: sqlite3.Connection) -> int:
+    raw = get_meta(conn, PROCESSED_META_KEY)
+    try:
+        return int(raw) if raw is not None else 0
+    except ValueError:
+        return 0
+
+
+def mark_processed(conn: sqlite3.Connection, episode_id: int) -> None:
+    cur = get_processed_max_id(conn)
+    if episode_id > cur:
+        set_meta(conn, PROCESSED_META_KEY, str(episode_id))
+
+
+def fetch_unprocessed_episode_ids(conn: sqlite3.Connection) -> list[int]:
+    """write_processed_max_id 以降の episode id を昇順で返す。"""
+    cur = get_processed_max_id(conn)
+    rows = conn.execute(
+        "SELECT id FROM episodes WHERE id > ? ORDER BY id",
+        (cur,),
+    ).fetchall()
+    return [r[0] for r in rows]
 
 
 def fetch_episode(conn: sqlite3.Connection, episode_id: int) -> dict | None:
@@ -134,6 +160,7 @@ def run(episode_ids: Iterable[int], buffer_n: int = DEFAULT_BUFFER_N, client: LL
         for eid in episode_ids:
             try:
                 process_episode(conn, eid, buffer_n, cli)
+                mark_processed(conn, eid)
             except Exception as e:
                 sys.stderr.write(f"[persona-memory] write process_episode {eid} failed: {e}\n")
                 continue
