@@ -1,0 +1,171 @@
+"""Phase 4: recall LLM 経路 (extract / search / format / run) のテスト。"""
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import pytest
+
+from scripts.db.connection import connect
+from scripts.db.migrate import init_db
+from scripts.db.repo import save_episode
+from scripts.recall.extract import build_prompt, extract_query_keywords, parse_keywords
+from scripts.recall.format import to_additional_context
+from scripts.recall.run import recall
+from scripts.recall.search import bump_access_counts, search
+from scripts.write.extract import FactCandidate
+from scripts.write.persist import insert_new
+
+
+@dataclass
+class FakeRecallClient:
+    keywords: list[str]
+    embedding_map: dict[str, list[float]] = field(default_factory=dict)
+    default_embedding: list[float] = field(default_factory=lambda: [0.0] * 768)
+
+    def generate(self, model: str, prompt: str) -> str:
+        return json.dumps(self.keywords, ensure_ascii=False)
+
+    def embed(self, model: str, text: str) -> list[float]:
+        return list(self.embedding_map.get(text, self.default_embedding))
+
+
+@pytest.fixture
+def db(tmp_path: Path):
+    db_path = tmp_path / "p.db"
+    init_db(db_path)
+    conn = connect(db_path)
+    yield conn
+    conn.close()
+
+
+# ── extract ─────────────────────────────────────────────────────────────────
+
+def test_build_prompt_includes_buffer_and_content():
+    p = build_prompt("コーヒーは?", [{"role": "user", "content": "好きな飲み物の話"}])
+    assert "コーヒーは?" in p
+    assert "好きな飲み物の話" in p
+
+
+def test_parse_keywords_valid():
+    assert parse_keywords('["コーヒー","嗜好"]') == ["コーヒー", "嗜好"]
+
+
+def test_parse_keywords_with_code_fence():
+    assert parse_keywords('```json\n["go"]\n```') == ["go"]
+
+
+def test_parse_keywords_empty_for_short_utterance():
+    assert parse_keywords("[]") == []
+
+
+def test_parse_keywords_garbage():
+    assert parse_keywords("not json") == []
+    assert parse_keywords("") == []
+
+
+def test_extract_query_keywords_with_fake_client():
+    client = FakeRecallClient(keywords=["コーヒー"])
+    r = extract_query_keywords("深煎り好き?", [], client)
+    assert r == ["コーヒー"]
+
+
+# ── search ──────────────────────────────────────────────────────────────────
+
+def test_search_returns_empty_for_no_facts(db):
+    r = search(db, [[1.0] + [0.0] * 767])
+    assert r == []
+
+
+def test_search_finds_active_facts_only(db):
+    insert_new(db, FactCandidate("preference", "coffee", "深煎り", 6), [1.0] + [0.0] * 767)
+    insert_new(db, FactCandidate("preference", "old_coffee", "ミルク", 6), [1.0] + [0.0] * 767)
+    db.execute("UPDATE facts SET status='superseded' WHERE key='old_coffee'")
+    db.commit()
+
+    hits = search(db, [[1.0] + [0.0] * 767])
+    assert len(hits) == 1
+    assert hits[0].key == "coffee"
+
+
+def test_search_dedupes_across_keywords(db):
+    insert_new(db, FactCandidate("preference", "coffee", "深煎り", 6), [1.0] + [0.0] * 767)
+    db.commit()
+    # 同じ embedding を複数回 keyword 検索しても重複しない
+    hits = search(db, [[1.0] + [0.0] * 767, [1.0] + [0.0] * 767])
+    assert len(hits) == 1
+
+
+def test_search_ranks_by_score(db):
+    """importance が高い & access_count が多い fact が上位に来る。"""
+    insert_new(db, FactCandidate("preference", "low", "v", 3), [1.0] + [0.0] * 767)
+    insert_new(db, FactCandidate("preference", "high", "v", 9), [1.0] + [0.0] * 767)
+    db.execute("UPDATE facts SET access_count = 10 WHERE key='high'")
+    db.commit()
+
+    hits = search(db, [[1.0] + [0.0] * 767])
+    assert len(hits) == 2
+    assert hits[0].key == "high"  # 高 importance + 高 access_count
+
+
+def test_bump_access_counts(db):
+    insert_new(db, FactCandidate("skill", "go", "10y", 7), [1.0] + [0.0] * 767)
+    db.commit()
+    fid = db.execute("SELECT id FROM facts").fetchone()[0]
+    bump_access_counts(db, [fid])
+    row = db.execute("SELECT access_count, last_accessed_at FROM facts WHERE id=?", (fid,)).fetchone()
+    assert row[0] == 1
+    assert row[1] is not None
+
+
+# ── format ──────────────────────────────────────────────────────────────────
+
+def test_format_empty():
+    assert to_additional_context([]) == ""
+
+
+def test_format_includes_category_key_value():
+    from scripts.recall.search import RecalledFact
+    facts = [RecalledFact(
+        fact_id=1, category="preference", key="coffee", value="深煎り",
+        importance=6, access_count=2, distance=0.1, score=0.5,
+    )]
+    md = to_additional_context(facts)
+    assert "## 関連する記憶" in md
+    assert "[preference/coffee]" in md
+    assert "深煎り" in md
+
+
+# ── run.recall ──────────────────────────────────────────────────────────────
+
+def test_recall_full_path(db):
+    """fact を入れて、recall LLM がそれに当たるキーワードを返した時に出力される。"""
+    save_episode(db, role="user", content="コーヒーの話したい", session_id="s1")
+    insert_new(db, FactCandidate("preference", "coffee", "深煎り好き", 6), [1.0] + [0.0] * 767)
+    db.commit()
+
+    client = FakeRecallClient(
+        keywords=["コーヒー"],
+        embedding_map={"コーヒー": [1.0] + [0.0] * 767},
+    )
+    out = recall(db, "深煎りまた飲みたい", client)
+    assert "深煎り好き" in out
+    assert "[preference/coffee]" in out
+
+
+def test_recall_empty_when_no_keywords(db):
+    """LLM が [] を返したら additionalContext は空。"""
+    insert_new(db, FactCandidate("preference", "coffee", "深煎り", 6), [1.0] + [0.0] * 767)
+    db.commit()
+    client = FakeRecallClient(keywords=[])
+    assert recall(db, "OK", client) == ""
+
+
+def test_recall_empty_when_no_hits(db):
+    """fact 0 件、または全て distance 超なら空。"""
+    client = FakeRecallClient(
+        keywords=["コーヒー"],
+        embedding_map={"コーヒー": [1.0] + [0.0] * 767},
+    )
+    assert recall(db, "深煎り", client) == ""

@@ -1,16 +1,17 @@
-"""UserPromptSubmit hook 同期処理 (phase 3 範囲).
+"""UserPromptSubmit hook 同期処理 (phase 4 範囲).
 
 実行内容:
 1. 機密チェック (検出時は raw 保存 / recall すべてスキップ、stderr 警告)
 2. user 発話を episodes に raw 保存 (zero-loss)
-3. write LLM を detach 起動 (saved episode_id を渡す) ← phase 3 追加
-4. recall は phase 4 で追加 (現状は何も注入しない)
+3. recall: ローカル LLM がキーワード抽出 → DB 検索 → additionalContext 出力 ← phase 4 追加
+4. write LLM を detach 起動 (saved episode_id を渡す)
 
-fail-open: 例外 / 未初期化 DB は exit 0 で素通し。Claude Code 本体を止めない。
+fail-open: recall / write どこで失敗しても raw 保存は守られ Claude Code 本体は進む。
 """
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 from scripts.db.connection import connect
@@ -18,6 +19,19 @@ from scripts.db.repo import save_episode
 from scripts.hooks.spawn import spawn_write
 from scripts.secrets.detect import detect_secrets, warning_message
 from scripts.shared.env import get_db_path, get_session_id_from_payload
+from scripts.shared.ollama import OllamaClient
+
+
+def _emit_additional_context(text: str) -> None:
+    if not text:
+        return
+    out = {
+        "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": text,
+        }
+    }
+    print(json.dumps(out, ensure_ascii=False))
 
 
 def main() -> int:
@@ -33,25 +47,37 @@ def main() -> int:
     found = detect_secrets(prompt)
     if found:
         sys.stderr.write(warning_message(found))
-        return 2  # block: prompt は Anthropic にも送らない
+        return 2  # block
 
     db_path = get_db_path()
     if db_path is None:
-        return 0  # 未初期化なら no-op
+        return 0
 
     session_id = get_session_id_from_payload(payload)
+    additional_context = ""
     try:
         conn = connect(db_path)
         try:
             episode_id = save_episode(conn, role="user", content=prompt, session_id=session_id)
+
+            # ── recall: 失敗しても sys.stderr に残して素通し ──
+            if os.environ.get("PERSONA_RECALL_DISABLE") != "1":
+                try:
+                    from scripts.recall.run import recall
+                    additional_context = recall(conn, prompt, OllamaClient())
+                except Exception as e:
+                    sys.stderr.write(f"[persona-memory] recall failed: {e}\n")
         finally:
             conn.close()
     except Exception as e:
         sys.stderr.write(f"[persona-memory] raw save failed: {e}\n")
-        return 0  # fail-open
+        return 0
 
-    # write LLM を detach 起動 (Claude Code 本体は待たない)
+    # write LLM を detach 起動
     spawn_write([episode_id])
+
+    if additional_context:
+        _emit_additional_context(additional_context)
     return 0
 
 
