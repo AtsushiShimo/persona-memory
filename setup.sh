@@ -44,7 +44,8 @@ mkdir -p "$PERSONA_DIR"
 DB_PATH="$PERSONA_DIR/$PERSONA.db"
 VENV="$VENV_HOME/.venv"
 EMBED_MODEL="${PERSONA_EMBED_MODEL:-nomic-embed-text}"
-JUDGE_MODEL="${PERSONA_JUDGE_MODEL:-gemma3:12b}"
+LIGHT_MODEL="${PERSONA_LIGHT_MODEL:-${PERSONA_JUDGE_MODEL:-gemma3:4b}}"
+HEAVY_MODEL="${PERSONA_HEAVY_MODEL:-gemma3:12b}"
 
 log() { printf '\033[36m[setup]\033[0m %s\n' "$*"; }
 err() { printf '\033[31m[setup]\033[0m %s\n' "$*" >&2; }
@@ -56,7 +57,7 @@ if [[ ! -d "$VENV" ]]; then
 fi
 log "installing Python deps"
 "$VENV/bin/pip" install --quiet --upgrade pip
-"$VENV/bin/pip" install --quiet "mcp[cli]" sqlite-vec httpx
+"$VENV/bin/pip" install --quiet sqlite-vec httpx
 
 # 2. Ollama check + model pull
 if ! command -v ollama >/dev/null 2>&1; then
@@ -68,7 +69,7 @@ if ! curl -sS --max-time 2 http://localhost:11434/api/tags >/dev/null; then
   ollama serve >/dev/null 2>&1 &
   sleep 2
 fi
-for m in "$EMBED_MODEL" "$JUDGE_MODEL"; do
+for m in "$EMBED_MODEL" "$LIGHT_MODEL" "$HEAVY_MODEL"; do
   if ! ollama list 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$m\(:.*\)\?"; then
     log "pulling Ollama model: $m"
     ollama pull "$m"
@@ -77,14 +78,14 @@ for m in "$EMBED_MODEL" "$JUDGE_MODEL"; do
   fi
 done
 
-# 3. DB init (project-local)
+# 3. DB init (project-local) — 新スキーマ (scripts.db.migrate)
 if [[ -e "$DB_PATH" ]]; then
   log "DB exists, leaving as-is: $DB_PATH"
 else
   log "initializing DB: $DB_PATH"
-  "$VENV/bin/python" "$ROOT/scripts/init-memory.py" "$DB_PATH"
+  (cd "$ROOT" && PYTHONPATH="$ROOT" "$VENV/bin/python" -m scripts.db.migrate "$DB_PATH")
 fi
 
 log "venv:         $VENV  (shared across all projects)"
 log "persona DB:   $DB_PATH  (project-local)"
-log "models:       light=$EMBED_MODEL? embed=$EMBED_MODEL judge=$JUDGE_MODEL"
+log "models:       light=$LIGHT_MODEL  heavy=$HEAVY_MODEL  embed=$EMBED_MODEL"

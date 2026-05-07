@@ -1,20 +1,19 @@
 #!/usr/bin/env bash
-# Interactive bootstrap for a freshly cloned persona-memory.
-# Asks 7 questions (preset choice or free-form input), generates .mcp.json,
-# runs setup.sh, and seeds the persona's foundational identity as 'persona'
-# category facts (which are auto-injected on every SessionStart).
+# Interactive bootstrap for a freshly cloned persona-memory (redesign edition).
 #
-# Question order:
-#   1. 役割 (最重要 — このペルソナの存在意義)
-#   2. 性別
-#   3. 性格
-#   4. 一人称
-#   5. 口調
-#   6. ユーザーの呼び方
-#   7. 名前 (最後に Ollama で 3 案を動的生成して提示)
+# Asks 9 questions and seeds the persona's foundational identity into the
+# new schema as 'persona' category facts (= boot 層, SessionStart で常時注入).
 #
-# Name comes last so the LLM can propose names that match the role/voice
-# already chosen.
+# 質問順:
+#   0a. 軽量モデル (write 側 — fact 抽出用、高頻度発火)
+#   0b. 重量モデル (read 側 — recall キーワード抽出 + 圧縮、品質重視)
+#   1.  役割 (このペルソナの存在意義 — 最重要)
+#   2.  性別
+#   3.  性格
+#   4.  一人称
+#   5.  口調・話し方
+#   6.  ユーザーの呼び方
+#   7.  名前 (最後に Ollama で 3 案を動的生成)
 #
 # Usage: scripts/init.sh
 set -euo pipefail
@@ -52,29 +51,26 @@ ask_choice() {
 
 cat <<'BANNER'
 =========================================================
- persona-memory: 初期セットアップ
+ persona-memory: 初期セットアップ (redesign)
 =========================================================
- まずローカル LLM (Ollama) のモデル 2 種を選び、続けて 7 つ
- のペルソナ質問に答えてください。各項目は番号で選ぶか自由
+ ローカル LLM (Ollama) のモデル 2 種を選び、続けて 7 つの
+ ペルソナ質問に答えてください。各項目は番号で選ぶか自由
  入力できます。
 
- モデル方針 (rule/model_weight_policy):
-   軽量モデル (light) = 書き込み時 = 高頻度発火。応答遅延を
-                        抑えるため軽量。生ターンが救命網。
-   重量モデル (heavy) = 読み出し時 = recall 圧縮。出力が直接
-                        メインエージェントの context に注入さ
-                        れるため品質重視。
-
- light 選択 -> heavy 選択 -> 役割 -> 性別 -> 性格 -> 一人称 ->
-              口調 -> ユーザー呼称 -> 名前 (動的生成)
+ モデル方針:
+   light = 書き込み (write LLM) = 高頻度。応答遅延を抑える
+           ため軽量。生ターンが救命網。
+   heavy = 読み出し (recall LLM) = キーワード抽出 + 検索結果
+           整形。Claude Code の context に注入されるため品質
+           重視。
 ---------------------------------------------------------
 BANNER
 
 DEFAULT_NAME="$(basename "$ROOT")"
 
-# 0a. 軽量モデル (write 側: Stop / PreCompact / SessionEnd 用)
+# 0a. 軽量モデル (write 側)
 if [[ -z "${PERSONA_LIGHT_MODEL:-}" ]]; then
-  LIGHT_MODEL=$(ask_choice "[0a/9] 軽量モデル (書き込み時・高頻度発火)" \
+  LIGHT_MODEL=$(ask_choice "[0a/9] 軽量モデル (write・高頻度発火)" \
     "gemma3:4b (推奨・~3.3GB / 高速)" \
     "gemma3:1b (超軽量・~815MB / 最速だが粗い)" \
     "qwen2.5:3b-instruct (~1.9GB / 日本語強・軽量)" \
@@ -86,9 +82,9 @@ else
   echo "[0a/9] light model: $LIGHT_MODEL (env で指定済み)" >&2
 fi
 
-# 0b. 重量モデル (read 側: proxy_recall の圧縮用)
+# 0b. 重量モデル (read 側)
 if [[ -z "${PERSONA_HEAVY_MODEL:-}" ]]; then
-  HEAVY_MODEL=$(ask_choice "[0b/9] 重量モデル (読み出し時・recall 圧縮用)" \
+  HEAVY_MODEL=$(ask_choice "[0b/9] 重量モデル (recall・品質重視)" \
     "gemma3:12b (推奨・~7GB / 品質高)" \
     "gemma3:27b (大型・~16GB / 最高品質・要メモリ)" \
     "qwen2.5:14b-instruct (~8.5GB / 日本語強)" \
@@ -102,15 +98,13 @@ fi
 
 EMBED_MODEL="${PERSONA_EMBED_MODEL:-nomic-embed-text}"
 
-# Back-compat: PERSONA_JUDGE_MODEL is still consumed by Python entry-points.
 export PERSONA_LIGHT_MODEL="$LIGHT_MODEL"
 export PERSONA_HEAVY_MODEL="$HEAVY_MODEL"
-export PERSONA_JUDGE_MODEL="$LIGHT_MODEL"
 export PERSONA_EMBED_MODEL="$EMBED_MODEL"
-# Legacy variable retained so downstream code that still reads it works.
-JUDGE_MODEL="$LIGHT_MODEL"
+# suggest_names.py は PERSONA_JUDGE_MODEL を読むので alias を渡す。
+export PERSONA_JUDGE_MODEL="$LIGHT_MODEL"
 
-# 1. 役割 — 最重要
+# 1. 役割
 PERSONA_ROLE=$(ask_choice "[1/9] 役割・立場 (このペルソナが何をする存在か)" \
   "バックエンドエンジニアの相棒" \
   "辛口コードレビュアー" \
@@ -148,7 +142,7 @@ PERSONA_FIRST_PERSON=$(ask_choice "[4/9] 一人称" \
   "うち" \
   "あたし")
 
-# 5. 口調・話し方
+# 5. 口調
 PERSONA_SPEECH=$(ask_choice "[5/9] 口調・話し方" \
   "敬語 (丁寧・中性的)" \
   "敬語 (女性的・柔らかめ — 〜ですの/〜ますわ)" \
@@ -186,50 +180,29 @@ done < <(python3 "$ROOT/scripts/suggest_names.py" \
   --speech-style "$PERSONA_SPEECH" 2>/dev/null || true)
 
 if [[ ${#SUGGESTED[@]} -gt 0 ]]; then
-  # Append a "use directory name" fallback so the user always has the dirname option.
   PERSONA_NAME=$(ask_choice "[7/9] ペルソナの名前 (生成案または自由入力)" \
     "${SUGGESTED[@]}" \
     "$DEFAULT_NAME (ディレクトリ名そのまま)")
-  # Strip the suffix if user picked the dirname option.
   PERSONA_NAME="${PERSONA_NAME%% (ディレクトリ名そのまま)}"
 else
   echo "  (生成失敗または Ollama 未起動。フォールバックで自由入力)" >&2
   PERSONA_NAME=$(ask_default "[7/9] ペルソナの名前" "$DEFAULT_NAME")
 fi
 
-# --- generate .mcp.json ---
-if [[ -e "$ROOT/.mcp.json" ]]; then
-  echo "[skip] .mcp.json は既に存在します (再生成しません)。"
-else
-  python3 - "$ROOT" "$PERSONA_NAME" "$LIGHT_MODEL" "$HEAVY_MODEL" "$EMBED_MODEL" <<'PY'
-import sys, pathlib
-root, persona, light, heavy, embed = sys.argv[1:6]
-template = pathlib.Path(root) / ".mcp.json.template"
-target = pathlib.Path(root) / ".mcp.json"
-content = (
-    template.read_text()
-    .replace("{{ROOT}}", root)
-    .replace("{{PERSONA}}", persona)
-    .replace("{{LIGHT_MODEL}}", light)
-    .replace("{{HEAVY_MODEL}}", heavy)
-    # Back-compat: existing template still references JUDGE_MODEL.
-    .replace("{{JUDGE_MODEL}}", light)
-    .replace("{{EMBED_MODEL}}", embed)
-)
-target.write_text(content)
-PY
-  echo "[ok] .mcp.json を生成しました"
-fi
-
-# --- venv + Ollama models + DB ---
+# --- venv + Ollama models + DB (setup.sh が .persona-memory/ 配下に作る) ---
 "$ROOT/setup.sh" "$PERSONA_NAME"
 
-# --- write per-persona config.env (consumed by hook scripts) ---
-CONFIG_ENV="$ROOT/data/$PERSONA_NAME.config.env"
+# --- パス確定 (load_persona_env.sh と同じ規約) ---
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+PERSONA_DIR="$PROJECT_DIR/.persona-memory"
+DB_PATH="$PERSONA_DIR/$PERSONA_NAME.db"
+CONFIG_ENV="$PERSONA_DIR/$PERSONA_NAME.config.env"
+
+# --- write per-persona config.env ---
 cat > "$CONFIG_ENV" <<EOF
 # Generated by scripts/init.sh on $(date '+%Y-%m-%d %H:%M:%S')
 # Sourced by .claude/hooks/* via scripts/load_persona_env.sh
-PERSONA_MEMORY_DB="$ROOT/data/$PERSONA_NAME.db"
+PERSONA_MEMORY_DB="$DB_PATH"
 PERSONA_LIGHT_MODEL="$LIGHT_MODEL"
 PERSONA_HEAVY_MODEL="$HEAVY_MODEL"
 PERSONA_EMBED_MODEL="$EMBED_MODEL"
@@ -237,13 +210,14 @@ OLLAMA_HOST="${OLLAMA_HOST:-http://localhost:11434}"
 EOF
 echo "[ok] $CONFIG_ENV を生成しました"
 
-# Mark this persona as active so hooks pick up its config.env automatically.
-echo "$PERSONA_NAME" > "$ROOT/data/active-persona"
+# Mark this persona as active so hooks pick up its config automatically.
+echo "$PERSONA_NAME" > "$PERSONA_DIR/active-persona"
 echo "[ok] active-persona = $PERSONA_NAME"
 
 # --- seed initial persona facts ---
-export PERSONA_MEMORY_DB="$ROOT/data/$PERSONA_NAME.db"
-"$ROOT/.venv/bin/python" "$ROOT/scripts/seed_persona.py" \
+export PERSONA_MEMORY_DB="$DB_PATH"
+PYTHONPATH="$ROOT" "$ROOT/.venv/bin/python" "$ROOT/scripts/seed_persona.py" \
+  --db "$DB_PATH" \
   --role "$PERSONA_ROLE" \
   --name "$PERSONA_NAME" \
   --gender "$PERSONA_GENDER" \
@@ -260,17 +234,17 @@ cat <<EOF
   役割:        $PERSONA_ROLE
   性格:        $PERSONA_PERSONALITY
   口調:        $PERSONA_SPEECH
-  DB:          $PERSONA_MEMORY_DB
-  light モデル: $LIGHT_MODEL  (書き込み時)
-  heavy モデル: $HEAVY_MODEL  (読み出し圧縮時)
+  DB:          $DB_PATH
+  light モデル: $LIGHT_MODEL  (write 側)
+  heavy モデル: $HEAVY_MODEL  (recall 側)
   config.env:  $CONFIG_ENV
-  MCP 設定:    $ROOT/.mcp.json (このディレクトリ専用)
-  active 印:   $ROOT/data/active-persona
+  active 印:   $PERSONA_DIR/active-persona
 
  次のステップ:
    claude     # Claude Code をこのディレクトリで起動
 
- SessionStart で 7 つの persona facts (役割/名前/性別/性格/
- 一人称/口調/ユーザー呼称) が context に注入されます。
+ SessionStart で boot 層 (persona facts) が自動注入されます。
+ デバッグログを見たい場合は:
+   export PERSONA_MEMORY_DEBUG=c  # default: 最詳細
 =========================================================
 EOF
