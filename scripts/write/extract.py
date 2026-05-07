@@ -41,23 +41,45 @@ class FactCandidate:
 
 
 _PROMPT_TEMPLATE = """\
-あなたはユーザーとアシスタントの会話から、ユーザーの長期記憶として残すべき事実 (fact) を抽出するアシスタントです。
+あなたはユーザーとアシスタントの会話から、長期記憶として残すべき事実 (fact) を抽出するアシスタントです。
 
-抽出ルール:
-- category は次のいずれか: persona, rule, preference, aversion, profile, skill, context
-  - persona: ユーザーがエージェント (あなた) に求める振る舞い・性格 (例: 「率直に指摘して」)
-  - rule: 守るべきハード制約 (例: 「main に force push 禁止」)
-  - preference: ユーザーの個人的な好み (例: コーヒーは深煎り)
-  - aversion: ユーザーが避けたいもの (例: Java は書きたくない)
-  - profile: ユーザーの属性 (役職、住居、家族構成など)
-  - skill: 技術知識・経験
-  - context: 進行中のプロジェクト・状況
-- key は category 内で識別可能な英数字文字列 (snake_case 推奨、例: coffee_preference)
-- value は事実本体を 1-2 行で簡潔に
-- importance は 1-9 の整数。persona/rule は 8-9、profile/skill は 5-7、preference/aversion/context は 4-6 を目安
-- 抽出すべき事実が無ければ空配列 [] を返す
-- ユーザー自身の発言に基づく事実のみ抽出。アシスタントの推測や提案は対象外
+## category 選択
+- persona: ユーザーがエージェント (あなた) に求める振る舞い・性格 (例: 「率直に指摘して」)
+- rule: 守るべきハード制約 (例: 「main に force push 禁止」)
+- preference: ユーザーの個人的な好み (例: コーヒーは深煎り)
+- aversion: ユーザーが避けたいもの (例: Java は書きたくない)
+- profile: ユーザーの属性 (役職、住居、家族構成など)
+- skill: 技術知識・経験 (本人の経験 + 調査で得た知識の両方)
+- context: 進行中のプロジェクト・状況・調査結論
+
+## 抽出対象
+(a) ユーザーが述べた個人的な事実 → preference / aversion / profile / skill / context
+(b) ユーザーがエージェントに求める振る舞い → persona
+(c) ユーザーが守らせたいハード制約 → rule
+(d) **ツール結果 (WebSearch / WebFetch / Read / Bash 等) から得た、確認済みの外部知識** → 主に skill / context
+   - 例: 「`CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX` は settings.json の env で設定する」
+   - 例: 「sqlite-vec は cosine 距離を MATCH で計算する」
+(e) **会話の中で確定した調査結論・実験結果** → 主に context
+   - 例: 「実装 X はバグがあり Y で代替する方針に決めた」
+
+## 除外対象
+- アシスタントの推測・仮説・「〜かもしれない」 「可能性がある」 等の不確定情報
+- 単なる質問・提案・選択肢提示
+- ツール結果でも「未検証 / 未確認」 のもの (= 引用元として価値が無い)
+- 雑談・繰り返し・既に DB にある情報の再確認
+
+## 出力形式
+- key: snake_case の英数字 (例: coffee_preference, remote_control_env)
+- value: 事実本体を 1-2 行で簡潔に
+- importance: 1-9 の整数
+  - persona / rule: 8-9
+  - profile / skill (本人経験): 6-7
+  - skill (調査知識) / context: 5-7
+  - preference / aversion: 4-6
+- 抽出対象が無ければ空配列 []
 - 出力は JSON 配列のみ (説明・前置き・コードフェンス禁止)
+
+## 入力
 
 直近の会話:
 {buffer}
@@ -65,7 +87,8 @@ _PROMPT_TEMPLATE = """\
 今回の発話 ({role}):
 {content}
 
-JSON 配列で抽出結果を出力:"""
+## 出力
+JSON 配列:"""
 
 
 def build_prompt(role: str, content: str, buffer: list[dict]) -> str:
