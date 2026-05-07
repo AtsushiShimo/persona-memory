@@ -53,42 +53,30 @@ PERSONA_MEMORY_DB="$DB" \
 PYTHONPATH="$PLUGIN_ROOT" \
   "$VENV_HOME/.venv/bin/python" "$PLUGIN_ROOT/scripts/upgrade.py" --db "$DB"
 
-# 2. .envrc に persona-memory ブロックを追加/更新 (direnv 経由で env 連携)
-echo
-echo "=== .envrc を更新 ==="
-"$VENV_HOME/.venv/bin/python" "$PLUGIN_ROOT/scripts/envrc_manage.py" add \
-  "$PROJECT_DIR/.envrc"
-
-if ! command -v direnv >/dev/null 2>&1; then
-  echo "[warn] direnv が未インストール。.envrc は更新しましたが auto-export は"
-  echo "       されません。手動 export か direnv インストール推奨:"
-  echo "         brew install direnv && eval \"\$(direnv hook zsh)\""
-fi
-
-# 3. (旧 0.4.7 の名残) settings.local.json から env を除去
+# 2. settings.local.json の env を最新化 (CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX)
+#    値はペルソナ名そのもの (区切り文字 ': ' は付けない、Claude Code 側で
+#    `<prefix>-<adj>-<noun>` 形式に組まれる)
+mkdir -p "$PROJECT_DIR/.claude"
 SETTINGS_FILE="$PROJECT_DIR/.claude/settings.local.json"
-if [ -f "$SETTINGS_FILE" ]; then
-  "$VENV_HOME/.venv/bin/python" - "$SETTINGS_FILE" <<'PY'
+"$VENV_HOME/.venv/bin/python" - "$SETTINGS_FILE" "$ACTIVE" <<'PY'
 import json, pathlib, sys
 fp = pathlib.Path(sys.argv[1])
-data = json.loads(fp.read_text(encoding="utf-8"))
+prefix = sys.argv[2]
+data = json.loads(fp.read_text(encoding="utf-8")) if fp.exists() else {}
 env = data.get("env") or {}
-removed = env.pop("CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX", None)
-if env:
+if env.get("CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX") == prefix:
+    print(f"[ok] env CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX 既に最新 ({prefix})")
+else:
+    env["CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX"] = prefix
     data["env"] = env
-elif "env" in data:
-    del data["env"]
-fp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-if removed:
-    print(f"[cleanup] 旧 settings.local.json から env を除去 (direnv 経路に移行)")
+    fp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"[ok] {fp} に CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX={prefix} を設定")
 PY
-fi
 
 echo
 echo "=== upgrade 完了: $ACTIVE ==="
 echo "ペルソナ・記憶は無傷で、共通行動指針だけ最新になりました。"
 echo "Claude Code を完全終了 → 再起動で反映されます。"
-echo "(direnv 利用時) 'direnv allow' を実行してから claude を起動。"
 ```
 
 ## 完了後ユーザーへ
