@@ -102,19 +102,6 @@ def seed(
             9,
         ),
         (
-            "rule", "remote_session_title_prefix",
-            "リモートセッション (`/remote-control` で立てる、Claude モバイル"
-            "アプリのセッション一覧に表示される名前) や、session title / "
-            "session summary を生成する場面では、**persona/identity に記述"
-            "された自分の名前を必ず冒頭にプレフィックスとして付ける**。"
-            "形式: `<自分の名前>: <要約>` "
-            "(例: 名前が『凜』なら 「凜: Shortcake craving discussion」)。"
-            "理由: モバイルアプリの session 一覧で、どのペルソナと会話して"
-            "いるかを即座に判別できるようにするため。"
-            "プレフィックスを忘れたり、別のペルソナ名を使ったりしない。",
-            9,
-        ),
-        (
             "rule", "forbid_auto_memory",
             "**Claude Code 組み込みの auto memory 機構** "
             "(~/.claude/projects/<project>/memory/ 配下のファイル / MEMORY.md) "
