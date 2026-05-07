@@ -82,7 +82,10 @@ def test_build_summarize_prompt_includes_user_content_and_hits():
     assert "コーヒーは深煎りが好き" in prompt  # episode content
     # 関連性判断・要約指示が含まれる
     assert "関係ある" in prompt
-    assert "自然な日本語" in prompt or "自然な" in prompt
+    # ライブラリアン (3 人称中立) 設定が含まれる
+    assert "ライブラリアン" in prompt
+    assert "3 人称" in prompt
+    assert "1 人称禁止" in prompt
 
 
 def test_build_summarize_prompt_handles_empty_inputs():
