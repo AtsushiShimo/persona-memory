@@ -46,8 +46,9 @@ def test_seed_inserts_all_persona_facts(db_path: Path):
         conn.close()
 
     keys = [r[0] for r in rows]
-    # 7 つの基本 + 2 つのデフォルト行動指針 = 9
-    assert len(rows) == 9
+    # 7 つの基本 + 3 つのデフォルト行動指針 (response_brevity /
+    # confirmation_before_acting / silent_memory) = 10
+    assert len(rows) == 10
     assert "role" in keys
     assert "identity" in keys
     assert "personality" in keys
@@ -57,6 +58,7 @@ def test_seed_inserts_all_persona_facts(db_path: Path):
     assert "address_user" in keys
     assert "response_brevity" in keys
     assert "confirmation_before_acting" in keys
+    assert "silent_memory" in keys
 
 
 def test_seed_writes_embeddings_when_available(db_path: Path):
@@ -70,7 +72,7 @@ def test_seed_writes_embeddings_when_available(db_path: Path):
         n = conn.execute("SELECT COUNT(*) FROM fact_embeddings").fetchone()[0]
     finally:
         conn.close()
-    assert n == 9
+    assert n == 10
 
 
 def test_seed_idempotent(db_path: Path):
@@ -105,6 +107,6 @@ def test_seed_persona_facts_are_boot_layer(db_path: Path):
     finally:
         conn.close()
 
-    # 全 9 件が persona category なので boot 層に出る
-    assert len(facts) == 9
+    # 全 10 件が persona category なので boot 層に出る
+    assert len(facts) == 10
     assert all(f["category"] == "persona" for f in facts)
