@@ -65,25 +65,6 @@ rm -f "$DATA_DIR/$ACTIVE.db" "$DATA_DIR/$ACTIVE.config.env"
 rm -f "$DATA_DIR/active-persona"
 rm -f "$DATA_DIR/debug-recall.log"
 
-# settings.local.json から CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX を除去
-SETTINGS_FILE="$PROJECT_DIR/.claude/settings.local.json"
-if [ -f "$SETTINGS_FILE" ]; then
-  python3 - "$SETTINGS_FILE" <<'PY'
-import json, pathlib, sys
-fp = pathlib.Path(sys.argv[1])
-data = json.loads(fp.read_text(encoding="utf-8"))
-env = data.get("env") or {}
-removed = env.pop("CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX", None)
-if env:
-    data["env"] = env
-elif "env" in data:
-    del data["env"]
-fp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-if removed:
-    print(f"[ok] {fp} から CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX を除去")
-PY
-fi
-
 echo "[ok] 削除完了: $ACTIVE"
 echo
 echo "次のステップ: /persona-memory:init で新規セットアップ"
@@ -96,23 +77,6 @@ PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 DATA_DIR="$PROJECT_DIR/.persona-memory"
 
 rm -rf "$DATA_DIR"
-
-# settings.local.json から CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX を除去
-SETTINGS_FILE="$PROJECT_DIR/.claude/settings.local.json"
-if [ -f "$SETTINGS_FILE" ]; then
-  python3 - "$SETTINGS_FILE" <<'PY'
-import json, pathlib, sys
-fp = pathlib.Path(sys.argv[1])
-data = json.loads(fp.read_text(encoding="utf-8"))
-env = data.get("env") or {}
-env.pop("CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX", None)
-if env:
-    data["env"] = env
-elif "env" in data:
-    del data["env"]
-fp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-PY
-fi
 
 echo "[ok] $DATA_DIR を削除しました"
 echo
