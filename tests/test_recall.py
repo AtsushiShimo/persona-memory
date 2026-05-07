@@ -109,6 +109,24 @@ def test_search_ranks_by_score(db):
     assert hits[0].key == "high"  # 高 importance + 高 access_count
 
 
+def test_search_recalls_fresh_fact_with_zero_access_count(db):
+    """access_count=0 の新規 fact も recall に出る (cold-start catch-22 回避)。
+
+    旧式: acc = log(1+0)/5 = 0 → score = 0 → 永久に呼ばれない
+    新式: acc = 0.5 + 0.5 × ... → 0.5 ベースで残る
+    """
+    insert_new(db, FactCandidate("preference", "fresh", "新規 fact", 6), [1.0] + [0.0] * 767)
+    db.commit()
+    # 全 fact が access_count=0 のはず
+    n = db.execute("SELECT COUNT(*) FROM facts WHERE access_count = 0").fetchone()[0]
+    assert n == 1
+
+    hits = search(db, [[1.0] + [0.0] * 767])
+    assert len(hits) == 1
+    assert hits[0].key == "fresh"
+    assert hits[0].score > 0  # 旧式バグでは 0 だった
+
+
 def test_bump_access_counts(db):
     insert_new(db, FactCandidate("skill", "go", "10y", 7), [1.0] + [0.0] * 767)
     db.commit()

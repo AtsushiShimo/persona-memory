@@ -45,10 +45,18 @@ def _parse_jst(s: str) -> datetime | None:
 
 
 def _score(distance: float, age_days: float, importance: int, access_count: int) -> float:
+    """重み式 (§5.4): relevance × recency × importance × access_factor
+
+    access_factor は [0.5, 1.0] の範囲。新規 fact (access_count=0) でも
+    0.5 のベースラインで残るようにし、cold-start 状態の fact が永久に
+    沈黙する catch-22 を回避する (= recall でヒットしないと access_count
+    が増えず、access_count が増えないと score=0 で recall に出ない問題)。
+    """
     relevance = 1.0 / (1.0 + max(0.0, distance))
     recency = math.exp(-RECENCY_LAMBDA * max(0.0, age_days))
     imp = importance / 9.0
-    acc = min(1.0, math.log(1 + access_count) / 5.0)
+    acc_log = min(1.0, math.log(1 + access_count) / 5.0)
+    acc = 0.5 + 0.5 * acc_log
     return relevance * recency * imp * acc
 
 
