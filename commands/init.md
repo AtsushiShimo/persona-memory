@@ -5,6 +5,65 @@ allowed-tools: Bash, Read, Write, AskUserQuestion
 
 新しいペルソナをセットアップします。
 
+## Step 0: 既存ペルソナの検出 (再実行時の挙動制御)
+
+最初に、このプロジェクトに既にペルソナが存在しないかチェックする。
+
+```bash
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+DATA_DIR="$PROJECT_DIR/.persona-memory"
+ACTIVE=""
+[ -r "$DATA_DIR/active-persona" ] && ACTIVE="$(cat "$DATA_DIR/active-persona" 2>/dev/null)"
+
+if [ -n "$ACTIVE" ] && [ -f "$DATA_DIR/$ACTIVE.db" ]; then
+  facts=$(sqlite3 "$DATA_DIR/$ACTIVE.db" \
+    "SELECT COUNT(*) FROM facts WHERE status='active' AND category='persona'" 2>/dev/null)
+  total=$(sqlite3 "$DATA_DIR/$ACTIVE.db" \
+    "SELECT COUNT(*) FROM facts WHERE status='active'" 2>/dev/null)
+  eps=$(sqlite3 "$DATA_DIR/$ACTIVE.db" "SELECT COUNT(*) FROM episodes" 2>/dev/null)
+  echo "===== 既存ペルソナ検出 ====="
+  echo "active:    $ACTIVE"
+  echo "persona facts: $facts"
+  echo "active facts (total): $total"
+  echo "episodes:  $eps"
+fi
+```
+
+**`ACTIVE` が空 (ペルソナ未登録) の場合**: そのまま下の「Batch 1」 に進む。
+
+**`ACTIVE` がある場合**: AskUserQuestion で実行モードを選ばせる:
+
+- **header**: `init モード`
+- **question**: "現在『$ACTIVE』 がアクティブです。どうしますか?"
+- **multiSelect**: false
+- **options**:
+  1. label: `同名で persona facts のみ更新` / description: "DB と episodes は維持。persona category の 9 facts を新しい質問回答で上書きする"
+  2. label: `同名で完全リセット` / description: "DB を削除して新規作成。episodes / 全 facts が消える (復元不能)"
+  3. label: `別名で新規追加` / description: "既存ペルソナは残し、別 DB を作って active を切り替える"
+  4. label: `キャンセル` / description: "何もしない"
+
+選択結果に応じた前処理:
+
+- **「同名で persona facts のみ更新」**:
+  - **既存の persona category の active 行を一括で superseded に降格** (Batch 1〜7 の seed が UNIQUE(category, key) WHERE active 制約を踏まないようにするため & 過去のキャンセル init で write LLM が混入させた重複 persona facts を一掃するため)
+  - episodes / 他 category の facts は残す
+  - Q7 の名前は ACTIVE で固定 (再質問しない)
+  ```bash
+  sqlite3 "$DATA_DIR/$ACTIVE.db" \
+    "UPDATE facts SET status='superseded', \
+                      updated_at=datetime('now', '+9 hours') \
+     WHERE category='persona' AND status='active'"
+  echo "[update] 既存 persona facts を superseded に降格、新 seed に進みます"
+  ```
+- **「同名で完全リセット」**: 以下を実行してから Batch 1 へ。
+  ```bash
+  rm -f "$DATA_DIR/$ACTIVE.db" "$DATA_DIR/$ACTIVE.config.env"
+  rm -f "$DATA_DIR/active-persona" "$DATA_DIR/debug-recall.log"
+  echo "[reset] $ACTIVE を削除しました。新規セットアップに進みます"
+  ```
+- **「別名で新規追加」**: 既存はそのまま、Batch 1 〜 Q7 で新名を取得して新規セットアップ。最後の active-persona 切替で新名が active になる
+- **「キャンセル」**: ここで終了。"キャンセルしました。" と返して何もしない
+
 ## デフォルトのモデル設定
 
 このコマンドは Ollama モデルを推奨デフォルト (`gemma3:4b` / `gemma3:12b` / `nomic-embed-text`) で使う前提です。後で変更したい場合は `/persona-memory:configure-models` で変更できます。
