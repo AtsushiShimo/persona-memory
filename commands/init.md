@@ -298,7 +298,25 @@ PYTHONPATH="$PLUGIN_ROOT" \
   --first-person "<Q5>" --speech-style "<Q6>" \
   --address-user "<Q4>"
 
-# 5. .gitignore に .persona-memory/ を追加するか提案 (個人記憶を git に上げない)
+# 5. リモートセッション名プレフィックスを project settings に書く
+#    Claude Code 公式の env var: CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX
+#    /remote-control で立てた session 名がモバイルアプリに表示される時、
+#    persona 名で prefix される (例: "凛: Shortcake craving discussion")。
+mkdir -p "$PROJECT_DIR/.claude"
+SETTINGS_FILE="$PROJECT_DIR/.claude/settings.local.json"
+"$VENV_HOME/.venv/bin/python" - "$SETTINGS_FILE" "$NAME" <<'PY'
+import json, pathlib, sys
+fp = pathlib.Path(sys.argv[1])
+prefix = sys.argv[2]
+data = json.loads(fp.read_text(encoding="utf-8")) if fp.exists() else {}
+env = data.get("env") or {}
+env["CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX"] = f"{prefix}: "
+data["env"] = env
+fp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+print(f"[ok] {fp} に CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX={prefix}: を設定しました")
+PY
+
+# 6. .gitignore に .persona-memory/ を追加するか提案 (個人記憶を git に上げない)
 if [ -d "$PROJECT_DIR/.git" ] && ! grep -q "^\.persona-memory/$" "$PROJECT_DIR/.gitignore" 2>/dev/null; then
   echo ".persona-memory/" >> "$PROJECT_DIR/.gitignore"
   echo "[ok] added .persona-memory/ to $PROJECT_DIR/.gitignore"
