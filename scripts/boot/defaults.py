@@ -48,6 +48,21 @@ DEFAULT_BOOT_FACTS: list[tuple[str, str, str, int]] = [
         9,
     ),
     (
+        "rule", "session_title_prefix",
+        "Claude Code の session display name (= /resume ピッカー / モバイルアプリ"
+        "のセッション一覧 / ターミナルタイトルに表示される名前) や、"
+        "session summary を会話から自動生成する場面では、**persona/identity"
+        "に書かれた自分の名前を必ず冒頭にプレフィックスとして付ける**。"
+        "形式: `<自分の名前>: <要約>` "
+        "(例: 名前が『凜』 なら 「凜: ケーキの相談」 「凜: バグ調査」 等)。"
+        "理由: モバイルアプリのセッション一覧で、どのペルソナと会話して"
+        "いるかを即座に判別できるようにするため。"
+        "プレフィックスを忘れたり、別のペルソナ名を使ったりしない。"
+        "初期の `<prefix>-<adj>-<noun>` 形式 (daemon 側で生成) は "
+        "CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX env で別途制御している。",
+        9,
+    ),
+    (
         "rule", "forbid_auto_memory",
         "**Claude Code 組み込みの auto memory 機構** "
         "(~/.claude/projects/<project>/memory/ 配下のファイル / MEMORY.md) "
