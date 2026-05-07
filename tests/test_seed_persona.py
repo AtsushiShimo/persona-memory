@@ -31,7 +31,7 @@ def _seed_kwargs() -> dict:
 
 
 def test_seed_inserts_all_boot_facts(db_path: Path):
-    """boot 層 = persona 10 + rule 1 = 11 件 seed される。"""
+    """boot 層 = persona 10 + rule 2 = 12 件 seed される。"""
     with patch("scripts.seed_persona.OllamaClient") as Mock:
         Mock.return_value.embed.return_value = []
         seed(db_path, **_seed_kwargs())
@@ -59,8 +59,9 @@ def test_seed_inserts_all_boot_facts(db_path: Path):
     ):
         assert k in persona_keys, f"missing persona/{k}"
 
-    # rule: forbid_auto_memory のみ
-    assert len(rule_rows) == 1
+    # rule: no_direct_db_access + forbid_auto_memory
+    assert len(rule_rows) == 2
+    assert "no_direct_db_access" in rule_keys
     assert "forbid_auto_memory" in rule_keys
 
 
@@ -75,7 +76,7 @@ def test_seed_writes_embeddings_when_available(db_path: Path):
         n = conn.execute("SELECT COUNT(*) FROM fact_embeddings").fetchone()[0]
     finally:
         conn.close()
-    assert n == 11  # persona 10 + rule 1
+    assert n == 12  # persona 10 + rule 2
 
 
 def test_seed_idempotent(db_path: Path):
@@ -110,7 +111,7 @@ def test_seed_persona_facts_are_boot_layer(db_path: Path):
     finally:
         conn.close()
 
-    # boot 層 = persona 10 + rule 1 = 11 件
-    assert len(facts) == 11
+    # boot 層 = persona 10 + rule 2 = 12 件
+    assert len(facts) == 12
     cats = {f["category"] for f in facts}
     assert cats == {"persona", "rule"}

@@ -59,6 +59,24 @@ DEFAULT_BOOT_FACTS: list[tuple[str, str, str, int]] = [
         9,
     ),
     (
+        "rule", "no_direct_db_access",
+        "**persona-memory の DB (.persona-memory/<persona>.db) を直接読まない**。"
+        "禁止される具体行為: "
+        "(1) Bash で sqlite3 / cat / xxd 等を使って DB を覗く、"
+        "(2) Read ツールで DB ファイルを開く、"
+        "(3) Python を直接書いて DB に SQL を投げる、"
+        "(4) MCP / 他経路で DB を query する。"
+        "記憶の参照は **必ず recall LLM 経由 (UserPromptSubmit hook が"
+        "additionalContext として注入してくれる)** のみ使う。"
+        "recall に出てこなかった情報は『その記憶は今の検索では出てこなかった』 と"
+        "正直に答えるか、ユーザーに別の言い方で聞き直すよう依頼する。"
+        "理由: 直接 SQL は recall LLM の意図解釈・関連度評価・supersedes 解決を"
+        "全部スキップしてしまい、結果として古い情報や無関係な fact を引いて"
+        "しまう。recall パイプラインの精度が改善されても効果が出ない。"
+        "本プラグインの設計思想: 記憶 = recall LLM 経由でのみアクセス。",
+        9,
+    ),
+    (
         "rule", "forbid_auto_memory",
         "**Claude Code 組み込みの auto memory 機構** "
         "(~/.claude/projects/<project>/memory/ 配下のファイル / MEMORY.md) "
