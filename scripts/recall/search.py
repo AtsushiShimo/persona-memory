@@ -144,3 +144,50 @@ def bump_access_counts(conn: sqlite3.Connection, fact_ids: list[int]) -> None:
         fact_ids,
     )
     conn.commit()
+
+
+# ── episodes 検索 (会話履歴を辿る用) ──────────────────────────────────────────
+
+EPISODE_LIKE_LIMIT = int(os.environ.get("PERSONA_RECALL_EPISODE_LIMIT", "8"))
+EPISODE_CONTENT_PREVIEW = int(os.environ.get("PERSONA_RECALL_EPISODE_PREVIEW", "300"))
+
+
+@dataclass
+class RecalledEpisode:
+    episode_id: int
+    role: str
+    content: str  # 切り詰め済み
+    timestamp: str
+
+
+def search_episodes_by_keywords(
+    conn: sqlite3.Connection,
+    keywords: list[str],
+    limit: int = EPISODE_LIKE_LIMIT,
+) -> list[RecalledEpisode]:
+    """SQL LIKE で episodes.content を全文部分一致検索 (新しい順).
+
+    embedding がまだ episodes に張られていないので keyword based の単純検索。
+    将来 episode_embeddings が populate されたらベクトル検索に置き換え可能。
+    """
+    if not keywords:
+        return []
+    cleaned = [k.strip() for k in keywords if k and k.strip()]
+    if not cleaned:
+        return []
+    where = " OR ".join(["content LIKE ?"] * len(cleaned))
+    params = [f"%{k}%" for k in cleaned] + [limit]
+    rows = conn.execute(
+        f"SELECT id, role, content, timestamp FROM episodes "
+        f"WHERE {where} ORDER BY id DESC LIMIT ?",
+        params,
+    ).fetchall()
+    out: list[RecalledEpisode] = []
+    for r in rows:
+        content = r[2] or ""
+        if EPISODE_CONTENT_PREVIEW > 0 and len(content) > EPISODE_CONTENT_PREVIEW:
+            content = content[:EPISODE_CONTENT_PREVIEW] + "…"
+        out.append(RecalledEpisode(
+            episode_id=r[0], role=r[1], content=content, timestamp=r[3],
+        ))
+    return out
