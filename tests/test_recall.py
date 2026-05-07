@@ -127,6 +127,22 @@ def test_search_recalls_fresh_fact_with_zero_access_count(db):
     assert hits[0].score > 0  # 旧式バグでは 0 だった
 
 
+def test_search_excludes_boot_layer(db):
+    """boot 層 (persona/rule) は SessionStart で既に注入されてるので recall に出さない。"""
+    insert_new(db, FactCandidate("persona", "style", "率直に", 9), [1.0] + [0.0] * 767)
+    insert_new(db, FactCandidate("rule", "branch", "main 直 push 不可", 9), [1.0] + [0.0] * 767)
+    insert_new(db, FactCandidate("preference", "coffee", "深煎り", 6), [1.0] + [0.0] * 767)
+    insert_new(db, FactCandidate("aversion", "sweets", "甘い物控える", 7), [1.0] + [0.0] * 767)
+    db.commit()
+
+    hits = search(db, [[1.0] + [0.0] * 767])
+    cats = {h.category for h in hits}
+    assert "persona" not in cats
+    assert "rule" not in cats
+    assert "preference" in cats
+    assert "aversion" in cats
+
+
 def test_bump_access_counts(db):
     insert_new(db, FactCandidate("skill", "go", "10y", 7), [1.0] + [0.0] * 767)
     db.commit()

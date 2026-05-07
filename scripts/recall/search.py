@@ -66,6 +66,13 @@ def _search_one(
     k: int = TOP_K_PER_KEYWORD,
     distance_max: float = DISTANCE_MAX,
 ) -> list[RecalledFact]:
+    """recall 検索の本体.
+
+    boot 層 (persona/rule) は SessionStart で全件注入済みなので、recall
+    では除外する。再注入はノイズ + token 浪費 (§8 / §10.1).
+    boot 層が更新された時だけ on_user_prompt が dirty フラグ経由で
+    additionalContext に prepend する仕組み (§8.1).
+    """
     blob = pack(embedding)
     rows = conn.execute(
         """
@@ -79,6 +86,7 @@ def _search_one(
         FROM knn
         JOIN facts f ON f.id = knn.fact_id
         WHERE f.status = 'active'
+          AND f.category NOT IN ('persona', 'rule')
         ORDER BY knn.distance
         """,
         (blob, k),
