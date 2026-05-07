@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from scripts.boot.inject import BOOT_CATEGORIES, mark_dirty
 from scripts.shared.embedding import pack
 from scripts.write.extract import FactCandidate
 from scripts.write.similarity import Match, is_reinforcement
@@ -76,23 +77,29 @@ def apply_candidate(
 ) -> str:
     """1 候補に対して 補強 / 変更 / 新規挿入 のいずれかを適用。
 
+    boot 層 (persona / rule) を触った場合は dirty フラグを立て、次の
+    UserPromptSubmit hook で即時再注入される (§8.1).
+
     Returns: "reinforce" / "supersede" / "insert"
     """
     if match is None:
         insert_new(conn, candidate, embedding, source)
+        if candidate.category in BOOT_CATEGORIES:
+            mark_dirty(conn)
         conn.commit()
         return "insert"
 
     if is_reinforcement(match.value, candidate.value):
         reinforce(conn, match, candidate)
+        if candidate.category in BOOT_CATEGORIES:
+            mark_dirty(conn)
         conn.commit()
         return "reinforce"
 
-    # 変更
-    # match.method == 'embedding' の場合、key を旧 fact の key に揃える
-    # (embedding 一致 = 別 key で同概念を再表現したケース)。
     if match.method == "embedding" and match.key != candidate.key:
         candidate.key = match.key
     supersede(conn, match, candidate, embedding, source)
+    if candidate.category in BOOT_CATEGORIES:
+        mark_dirty(conn)
     conn.commit()
     return "supersede"

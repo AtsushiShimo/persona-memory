@@ -60,13 +60,25 @@ def main() -> int:
         try:
             episode_id = save_episode(conn, role="user", content=prompt, session_id=session_id)
 
+            # ── boot 層 dirty 再注入 (§8.1) ──
+            from scripts.boot.inject import (
+                clear_dirty, fetch_boot_facts, format_boot_facts, is_dirty,
+            )
+            boot_section = ""
+            if is_dirty(conn):
+                boot_section = format_boot_facts(fetch_boot_facts(conn))
+                clear_dirty(conn)
+
             # ── recall: 失敗しても sys.stderr に残して素通し ──
+            recall_section = ""
             if os.environ.get("PERSONA_RECALL_DISABLE") != "1":
                 try:
                     from scripts.recall.run import recall
-                    additional_context = recall(conn, prompt, OllamaClient())
+                    recall_section = recall(conn, prompt, OllamaClient())
                 except Exception as e:
                     sys.stderr.write(f"[persona-memory] recall failed: {e}\n")
+
+            additional_context = "\n\n".join(s for s in (boot_section, recall_section) if s)
         finally:
             conn.close()
     except Exception as e:
