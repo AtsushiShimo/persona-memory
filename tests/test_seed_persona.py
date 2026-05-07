@@ -30,35 +30,38 @@ def _seed_kwargs() -> dict:
     )
 
 
-def test_seed_inserts_all_persona_facts(db_path: Path):
-    # Ollama 呼び出しを mock (空 vector を返す → embedding なしで保存)
+def test_seed_inserts_all_boot_facts(db_path: Path):
+    """boot 層 = persona 10 + rule 1 = 11 件 seed される。"""
     with patch("scripts.seed_persona.OllamaClient") as Mock:
         Mock.return_value.embed.return_value = []
         seed(db_path, **_seed_kwargs())
 
     conn = connect(db_path)
     try:
-        rows = conn.execute(
-            "SELECT key, value, importance FROM facts "
-            "WHERE category='persona' ORDER BY id"
+        persona_rows = conn.execute(
+            "SELECT key FROM facts WHERE category='persona' ORDER BY id"
+        ).fetchall()
+        rule_rows = conn.execute(
+            "SELECT key FROM facts WHERE category='rule' ORDER BY id"
         ).fetchall()
     finally:
         conn.close()
 
-    keys = [r[0] for r in rows]
-    # 7 つの基本 + 3 つのデフォルト行動指針 (response_brevity /
-    # confirmation_before_acting / silent_memory) = 10
-    assert len(rows) == 10
-    assert "role" in keys
-    assert "identity" in keys
-    assert "personality" in keys
-    assert "gender" in keys
-    assert "first_person" in keys
-    assert "speech_style" in keys
-    assert "address_user" in keys
-    assert "response_brevity" in keys
-    assert "confirmation_before_acting" in keys
-    assert "silent_memory" in keys
+    persona_keys = [r[0] for r in persona_rows]
+    rule_keys = [r[0] for r in rule_rows]
+
+    # persona: 7 基本 + 3 default 行動指針 = 10
+    assert len(persona_rows) == 10
+    for k in (
+        "role", "identity", "personality", "gender", "first_person",
+        "speech_style", "address_user",
+        "response_brevity", "confirmation_before_acting", "silent_memory",
+    ):
+        assert k in persona_keys, f"missing persona/{k}"
+
+    # rule: forbid_auto_memory のみ
+    assert len(rule_rows) == 1
+    assert "forbid_auto_memory" in rule_keys
 
 
 def test_seed_writes_embeddings_when_available(db_path: Path):
@@ -72,7 +75,7 @@ def test_seed_writes_embeddings_when_available(db_path: Path):
         n = conn.execute("SELECT COUNT(*) FROM fact_embeddings").fetchone()[0]
     finally:
         conn.close()
-    assert n == 10
+    assert n == 11  # persona 10 + rule 1
 
 
 def test_seed_idempotent(db_path: Path):
@@ -107,6 +110,7 @@ def test_seed_persona_facts_are_boot_layer(db_path: Path):
     finally:
         conn.close()
 
-    # 全 10 件が persona category なので boot 層に出る
-    assert len(facts) == 10
-    assert all(f["category"] == "persona" for f in facts)
+    # boot 層 = persona 10 + rule 1 = 11 件
+    assert len(facts) == 11
+    cats = {f["category"] for f in facts}
+    assert cats == {"persona", "rule"}

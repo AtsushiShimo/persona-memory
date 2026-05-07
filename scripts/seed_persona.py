@@ -23,11 +23,11 @@ from scripts.shared.ollama import OllamaClient
 EMBED_MODEL = os.environ.get("PERSONA_EMBED_MODEL", "nomic-embed-text")
 
 
-def _upsert_persona_fact(conn, key: str, value: str, importance: int) -> int:
-    """category='persona' で upsert (UNIQUE(category,key) WHERE active を使う)。"""
+def _upsert_boot_fact(conn, category: str, key: str, value: str, importance: int) -> int:
+    """boot 層 (persona / rule) に upsert (UNIQUE(category,key) WHERE active を使う)。"""
     row = conn.execute(
-        "SELECT id FROM facts WHERE category='persona' AND key=? AND status='active'",
-        (key,),
+        "SELECT id FROM facts WHERE category=? AND key=? AND status='active'",
+        (category, key),
     ).fetchone()
     if row:
         conn.execute(
@@ -39,8 +39,8 @@ def _upsert_persona_fact(conn, key: str, value: str, importance: int) -> int:
         return row[0]
     cur = conn.execute(
         "INSERT INTO facts(category, key, value, importance, source) "
-        "VALUES ('persona', ?, ?, ?, 'init')",
-        (key, value, importance),
+        "VALUES (?, ?, ?, ?, 'init')",
+        (category, key, value, importance),
     )
     return cur.lastrowid
 
@@ -56,16 +56,17 @@ def seed(
     speech_style: str,
     address_user: str,
 ) -> None:
-    facts: list[tuple[str, str, int]] = [
-        ("role", role, 9),
-        ("identity", f"このペルソナの名前は『{name}』", 9),
-        ("personality", personality, 9),
-        ("gender", f"性別: {gender}", 8),
-        ("first_person", f"一人称は『{first_person}』", 8),
-        ("speech_style", speech_style, 8),
-        ("address_user", address_user, 8),
+    # (category, key, value, importance)
+    facts: list[tuple[str, str, str, int]] = [
+        ("persona", "role", role, 9),
+        ("persona", "identity", f"このペルソナの名前は『{name}』", 9),
+        ("persona", "personality", personality, 9),
+        ("persona", "gender", f"性別: {gender}", 8),
+        ("persona", "first_person", f"一人称は『{first_person}』", 8),
+        ("persona", "speech_style", speech_style, 8),
+        ("persona", "address_user", address_user, 8),
         (
-            "response_brevity",
+            "persona", "response_brevity",
             "応答は端的に。質問に対しては核だけ即答する。"
             "前置き・状況再確認・『ご質問の件ですが』等の枕詞を省く。"
             "長文は禁止、必要なら 1-2 行の補足のみ。"
@@ -74,7 +75,7 @@ def seed(
             9,
         ),
         (
-            "confirmation_before_acting",
+            "persona", "confirmation_before_acting",
             "ユーザーが疑問形 (『〜してみる？』『どうする？』『〜できる？』等) "
             "で問いかけた場合、それは提案であって指示ではない。"
             "ユーザーの明示的な承認 (『はい』『お願い』『進めて』『やって』等) "
@@ -87,7 +88,7 @@ def seed(
             9,
         ),
         (
-            "silent_memory",
+            "persona", "silent_memory",
             "記憶は裏で勝手に蓄積される設計。会話のたびに『記憶します』"
             "『記憶しました』『覚えました』 等の報告は禁止。"
             "additionalContext で関連する過去の記憶が渡されても、"
@@ -100,16 +101,35 @@ def seed(
             "毎ターン『記憶します』 と返すのはノイズ。",
             9,
         ),
+        (
+            "rule", "forbid_auto_memory",
+            "**Claude Code 組み込みの auto memory 機構** "
+            "(~/.claude/projects/<project>/memory/ 配下のファイル / MEMORY.md) "
+            "への書き込み・読み込み・参照を **完全禁止**。"
+            "記憶は必ず persona-memory プラグインの DB "
+            "(<project>/.persona-memory/<persona>.db) に流す。"
+            "禁止される具体行為: "
+            "(1) ~/.claude/projects/*/memory/ への Write / Edit / Read、"
+            "(2) MEMORY.md の作成・更新、"
+            "(3) 会話で『auto memory に保存する?』 等の選択肢を提示すること、"
+            "(4) ユーザーに auto memory の利用を勧めること。"
+            "理由: auto memory は persona-memory の recall 経路から見えず、"
+            "両者を併用すると記憶が分散・断片化し、超越セッション (= /clear や"
+            "再起動跨ぎ) で『なぜか思い出してくれない fact』 が増える。"
+            "本プラグインの設計思想 = 全記憶を 1 つの DB に集約。"
+            "ユーザーが明示的に『auto memory に書いて』 と命じた場合のみ例外。",
+            9,
+        ),
     ]
 
     conn = connect(db_path)
     client = OllamaClient()
     try:
-        for key, value, importance in facts:
-            fid = _upsert_persona_fact(conn, key, value, importance)
+        for category, key, value, importance in facts:
+            fid = _upsert_boot_fact(conn, category, key, value, importance)
             conn.commit()
             try:
-                vec = client.embed(EMBED_MODEL, f"persona/{key}: {value}")
+                vec = client.embed(EMBED_MODEL, f"{category}/{key}: {value}")
                 if vec:
                     conn.execute(
                         "INSERT OR REPLACE INTO fact_embeddings(fact_id, embedding) "
@@ -117,16 +137,16 @@ def seed(
                         (fid, pack(vec)),
                     )
                     conn.commit()
-                    print(f"  seeded [persona/{key}] (importance={importance})")
+                    print(f"  seeded [{category}/{key}] (importance={importance})")
                 else:
                     print(
-                        f"  WARN seed [persona/{key}] saved without embedding "
+                        f"  WARN seed [{category}/{key}] saved without embedding "
                         f"(empty vector)",
                         file=sys.stderr,
                     )
             except Exception as e:
                 print(
-                    f"  WARN seed [persona/{key}] saved without embedding: {e}",
+                    f"  WARN seed [{category}/{key}] saved without embedding: {e}",
                     file=sys.stderr,
                 )
     finally:

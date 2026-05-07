@@ -45,15 +45,15 @@ fi
 選択結果に応じた前処理:
 
 - **「同名で persona facts のみ更新」**:
-  - **既存の persona category の active 行を一括で superseded に降格** (Batch 1〜7 の seed が UNIQUE(category, key) WHERE active 制約を踏まないようにするため & 過去のキャンセル init で write LLM が混入させた重複 persona facts を一掃するため)
+  - **既存の persona / rule category の active 行を一括で superseded に降格** (boot 層 = Batch 1〜7 の seed が UNIQUE(category, key) WHERE active 制約を踏まないようにするため & 過去のキャンセル init で write LLM が混入させた重複 boot facts を一掃するため)
   - episodes / 他 category の facts は残す
   - Q7 の名前は ACTIVE で固定 (再質問しない)
   ```bash
   sqlite3 "$DATA_DIR/$ACTIVE.db" \
     "UPDATE facts SET status='superseded', \
                       updated_at=datetime('now', '+9 hours') \
-     WHERE category='persona' AND status='active'"
-  echo "[update] 既存 persona facts を superseded に降格、新 seed に進みます"
+     WHERE category IN ('persona', 'rule') AND status='active'"
+  echo "[update] 既存 boot 層 (persona / rule) を superseded に降格、新 seed に進みます"
   ```
 - **「同名で完全リセット」**: 以下を実行してから Batch 1 へ。
   ```bash
