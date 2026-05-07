@@ -20,13 +20,16 @@ from scripts.write.persist import insert_new
 @dataclass
 class FakeClient:
     keywords: list[str]
+    summary: str = "深煎り好き"
     embedding_map: dict[str, list[float]] = field(default_factory=dict)
 
     def generate(self, model, prompt):
-        return json.dumps(
-            {"keywords": self.keywords, "search_history": False},
-            ensure_ascii=False,
-        )
+        if "search_history" in prompt:
+            return json.dumps(
+                {"keywords": self.keywords, "search_history": False},
+                ensure_ascii=False,
+            )
+        return self.summary
 
     def embed(self, model, text):
         return list(self.embedding_map.get(text, [0.0] * 768))

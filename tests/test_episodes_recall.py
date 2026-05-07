@@ -20,17 +20,20 @@ from scripts.recall.search import (
 
 @dataclass
 class FakeRecallClient:
-    """LLM 応答を JSON {keywords, search_history} で返す mock."""
+    """analyze_query と summarize_recall 両方に応答する mock."""
     keywords: list[str]
     search_history: bool = False
+    summary: str = "深煎りコーヒーの話があった"
     embedding_map: dict[str, list[float]] = field(default_factory=dict)
     default_embedding: list[float] = field(default_factory=lambda: [0.0] * 768)
 
     def generate(self, model, prompt):
-        return json.dumps(
-            {"keywords": self.keywords, "search_history": self.search_history},
-            ensure_ascii=False,
-        )
+        if "search_history" in prompt:
+            return json.dumps(
+                {"keywords": self.keywords, "search_history": self.search_history},
+                ensure_ascii=False,
+            )
+        return self.summary
 
     def embed(self, model, text):
         return list(self.embedding_map.get(text, self.default_embedding))
@@ -119,7 +122,7 @@ def test_format_no_section_when_both_empty():
 # ── recall full path with trigger ───────────────────────────────────────────
 
 def test_recall_searches_episodes_when_llm_says_history(db):
-    """LLM が search_history=true を返した時に episodes が検索される."""
+    """LLM が search_history=true を返した時に episodes が検索され、要約に反映."""
     save_episode(db, "user", "コーヒーは深煎りが好き", "s1")
     save_episode(db, "user", "履歴を見せて", "s1")
     db.commit()
@@ -127,22 +130,27 @@ def test_recall_searches_episodes_when_llm_says_history(db):
     client = FakeRecallClient(
         keywords=["コーヒー"],
         search_history=True,
+        summary="以前マスターは深煎りコーヒーが好きと話していた。",
         embedding_map={"コーヒー": [1.0] + [0.0] * 767},
     )
     out = recall(db, "履歴の中でコーヒーの話あった?", client)
-    assert "## 関連する過去の会話" in out
+    # 出力は要約された自然文 (構造化記法ではない)
+    assert "## 思い出した記憶" in out
     assert "深煎り" in out
+    # 旧形式のセクション見出しは無くなる (要約に統合される)
+    assert "## 関連する過去の会話" not in out
 
 
-def test_recall_skips_episodes_when_llm_says_no_history(db):
-    """LLM が search_history=false を返した時は episodes 検索しない."""
+def test_recall_returns_summary_only_when_llm_filters_all(db):
+    """LLM が「全て無関係」 と判定したら additionalContext は空."""
     save_episode(db, "user", "コーヒーは深煎りが好き", "s1")
     db.commit()
 
     client = FakeRecallClient(
         keywords=["コーヒー"],
         search_history=False,
+        summary="(該当なし)",
         embedding_map={"コーヒー": [1.0] + [0.0] * 767},
     )
     out = recall(db, "コーヒー何が好き?", client)
-    assert "## 関連する過去の会話" not in out
+    assert out == ""

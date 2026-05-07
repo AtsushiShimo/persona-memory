@@ -20,16 +20,24 @@ from scripts.write.persist import insert_new
 
 @dataclass
 class FakeRecallClient:
+    """LLM mock. analyze_query と summarize_recall の両方の呼び出しに応答する.
+
+    プロンプトに 'search_history' が含まれていれば analyze 呼び出しと判断、
+    それ以外は summarize 呼び出しと判断 (= summary 文字列を返す)。
+    """
     keywords: list[str]
     search_history: bool = False
+    summary: str = "深煎り好き"  # summarize_recall が返す要約文
     embedding_map: dict[str, list[float]] = field(default_factory=dict)
     default_embedding: list[float] = field(default_factory=lambda: [0.0] * 768)
 
     def generate(self, model: str, prompt: str) -> str:
-        return json.dumps(
-            {"keywords": self.keywords, "search_history": self.search_history},
-            ensure_ascii=False,
-        )
+        if "search_history" in prompt:
+            return json.dumps(
+                {"keywords": self.keywords, "search_history": self.search_history},
+                ensure_ascii=False,
+            )
+        return self.summary
 
     def embed(self, model: str, text: str) -> list[float]:
         return list(self.embedding_map.get(text, self.default_embedding))
@@ -178,18 +186,33 @@ def test_format_includes_category_key_value():
 # ── run.recall ──────────────────────────────────────────────────────────────
 
 def test_recall_full_path(db):
-    """fact を入れて、recall LLM がそれに当たるキーワードを返した時に出力される。"""
+    """fact が引かれて、LLM 要約された additionalContext が返る。"""
     save_episode(db, role="user", content="コーヒーの話したい", session_id="s1")
     insert_new(db, FactCandidate("preference", "coffee", "深煎り好き", 6), [1.0] + [0.0] * 767)
     db.commit()
 
     client = FakeRecallClient(
         keywords=["コーヒー"],
+        summary="マスターは深煎りのコーヒーを好んでいる。",
         embedding_map={"コーヒー": [1.0] + [0.0] * 767},
     )
     out = recall(db, "深煎りまた飲みたい", client)
-    assert "深煎り好き" in out
-    assert "[preference/coffee]" in out
+    assert "## 思い出した記憶" in out
+    assert "深煎り" in out
+    # 構造化記法 ([category/key]) は出力に含まれない (LLM が自然文に圧縮)
+    assert "[preference/coffee]" not in out
+
+
+def test_recall_empty_when_summary_says_no_match(db):
+    """LLM 要約が EMPTY_MARKER を返したら additionalContext は空。"""
+    insert_new(db, FactCandidate("preference", "coffee", "深煎り", 6), [1.0] + [0.0] * 767)
+    db.commit()
+    client = FakeRecallClient(
+        keywords=["コーヒー"],
+        summary="(該当なし)",
+        embedding_map={"コーヒー": [1.0] + [0.0] * 767},
+    )
+    assert recall(db, "深煎り好き?", client) == ""
 
 
 def test_recall_empty_when_no_keywords(db):

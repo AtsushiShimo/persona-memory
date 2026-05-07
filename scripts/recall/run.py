@@ -3,8 +3,9 @@
 入力: 現発話 + DB
 出力: additionalContext 文字列 (空文字 = 注入なし)
 
-仕様書 §5.1 に対応: LLM が発話を解析 (キーワード + 履歴参照意図).
-仕様書 §5.5 (要約) は **次の段階で実装予定**、現状は素のリストを返す。
+仕様書 §5 に従う:
+- 5.1 LLM が発話を解析 (キーワード + 履歴参照意図)
+- 5.5 検索結果を LLM が関連性 curate + 自然文要約してから main に渡す
 """
 from __future__ import annotations
 
@@ -18,12 +19,12 @@ from scripts.debug.recall_log import (
     log_keywords,
 )
 from scripts.recall.extract import RECALL_MODEL, analyze_query
-from scripts.recall.format import to_additional_context
 from scripts.recall.search import (
     bump_access_counts,
     search,
     search_episodes_by_keywords,
 )
+from scripts.recall.summarize import summarize_recall
 from scripts.shared.ollama import LLMClient
 
 EMBED_MODEL = os.environ.get("PERSONA_EMBED_MODEL", "nomic-embed-text")
@@ -98,7 +99,16 @@ def recall(
 
     if hits:
         bump_access_counts(conn, [h.fact_id for h in hits])
-    additional_context = to_additional_context(hits, episodes_hits)
+
+    # 5. LLM で関連性 curate + 自然文要約 (仕様書 §5.5)
+    summary = summarize_recall(content, hits, episodes_hits, client, model=recall_model)
+    if not summary:
+        # LLM が「関係ある記憶なし」 と判断 → 何も注入しない
+        if debug_enabled():
+            log_final_prompt("")
+        return ""
+
+    additional_context = f"## 思い出した記憶\n{summary}"
     if debug_enabled():
         log_final_prompt(additional_context)
     return additional_context
