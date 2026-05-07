@@ -121,7 +121,8 @@ def seed(
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Seed initial persona facts.")
-    p.add_argument("--db", required=True, type=Path, help="DB ファイルパス")
+    p.add_argument("--db", type=Path, default=None,
+                   help="DB ファイルパス (未指定時は PERSONA_MEMORY_DB env を使う)")
     p.add_argument("--role", required=True)
     p.add_argument("--name", required=True)
     p.add_argument("--gender", required=True)
@@ -131,8 +132,16 @@ def main() -> None:
     p.add_argument("--address-user", required=True)
     args = p.parse_args()
 
+    db_path = args.db
+    if db_path is None:
+        env_db = os.environ.get("PERSONA_MEMORY_DB", "").strip()
+        if not env_db:
+            print("ERROR: --db か PERSONA_MEMORY_DB env のどちらかが必要です", file=sys.stderr)
+            sys.exit(2)
+        db_path = Path(env_db)
+
     seed(
-        args.db,
+        db_path,
         role=args.role,
         name=args.name,
         gender=args.gender,

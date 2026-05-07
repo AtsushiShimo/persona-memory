@@ -228,9 +228,12 @@ EOF
 # 3. このペルソナをアクティブに
 echo "$NAME" > "$PERSONA_DIR/active-persona"
 
-# 4. persona facts を seed
+# 4. persona facts を seed (新スキーマ — scripts.* を import するため
+#    PYTHONPATH に PLUGIN_ROOT を渡す)
 PERSONA_MEMORY_DB="$PERSONA_DIR/$NAME.db" \
+PYTHONPATH="$PLUGIN_ROOT" \
   "$VENV_HOME/.venv/bin/python" "$PLUGIN_ROOT/scripts/seed_persona.py" \
+  --db "$PERSONA_DIR/$NAME.db" \
   --name "$NAME" \
   --role "<Q1>" --gender "<Q2>" --personality "<Q3>" \
   --first-person "<Q5>" --speech-style "<Q6>" \
@@ -246,7 +249,7 @@ fi
 完了後ユーザーへ:
 
 - 完了サマリー (名前 / 役割 / 性格 / 一人称 / 口調 / DB パス)
-- 使ったモデル: `gemma3:4b` (light) + `gemma3:12b` (heavy) + `nomic-embed-text` (embed)
+- 使ったモデル: `gemma3:4b` (light = write LLM) + `gemma3:12b` (heavy = recall LLM) + `nomic-embed-text` (embed)
 - 変更したい場合は `/persona-memory:configure-models`
-- **Claude Code を完全終了 → 再起動** で MCP server と hook がロードされる
+- **Claude Code を完全終了 → 再起動** で hook がロードされる
 - 次回起動時から SessionStart で persona facts が自動注入される
