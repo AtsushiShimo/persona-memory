@@ -62,8 +62,14 @@ def supersede(
 
     UNIQUE(category, key) WHERE status='active' を守るため、
     旧の status を先に変える。
+
+    旧 fact の embedding は fact_embeddings から削除する。残しておくと
+    recall の vec0 knn 検索で古い (active 外) embedding が枠を喰い、
+    active fact が漏れる現象が起きる (status は SQL 側で filter する
+    が、knn の k は filter 前に決まるため)。
     """
     conn.execute("UPDATE facts SET status = 'superseded' WHERE id = ?", (match.fact_id,))
+    conn.execute("DELETE FROM fact_embeddings WHERE fact_id = ?", (match.fact_id,))
     new_id = insert_new(conn, candidate, embedding, source, supersedes=match.fact_id)
     conn.execute("UPDATE facts SET superseded_by = ? WHERE id = ?", (new_id, match.fact_id))
     return new_id

@@ -32,7 +32,9 @@ class FakeClient:
         return self.summary
 
     def embed(self, model, text):
-        return list(self.embedding_map.get(text, [0.0] * 768))
+        # 新仕様: recall は発話全文を embed する。map に無い text でも
+        # fact 側の登録 vector と一致するよう default を [1.0]+[0]*767 にする。
+        return list(self.embedding_map.get(text, [1.0] + [0.0] * 767))
 
 
 @pytest.fixture

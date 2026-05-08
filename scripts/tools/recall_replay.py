@@ -86,23 +86,21 @@ def main() -> int:
         print(f"  [{b['role']}] {c}")
     analysis = analyze_query(args.query, buffer, client)
     print()
-    print(f"-> keywords:       {analysis.keywords}")
+    print(f"-> keywords:       {analysis.keywords}  (相槌 skip 判定 + episode hint 用、embed には使わない)")
     print(f"-> search_history: {analysis.search_history}")
     if not analysis.keywords:
-        print("\n(キーワードが空のため終了)")
+        print("\n(キーワードが空 = 相槌のため終了)")
         return 0
 
-    _print_section("Stage 2: embed keywords")
-    embeddings: list[list[float]] = []
-    for kw in analysis.keywords:
-        try:
-            v = client.embed(EMBED_MODEL, kw)
-            ok = bool(v) and len(v) == 768
-            print(f"  {kw!r}: dim={len(v) if v else 0} {'OK' if ok else 'EMPTY'}")
-            if v:
-                embeddings.append(v)
-        except Exception as e:
-            print(f"  {kw!r}: ERROR {e}")
+    _print_section("Stage 2: embed query (発話全文 1 つ)")
+    try:
+        v = client.embed(EMBED_MODEL, args.query)
+        ok = bool(v) and len(v) == 768
+        print(f"  query全文: dim={len(v) if v else 0} {'OK' if ok else 'EMPTY'}")
+        embeddings: list[list[float]] = [v] if v else []
+    except Exception as e:
+        print(f"  query全文: ERROR {e}")
+        embeddings = []
 
     _print_section("Stage 3a: search facts (vec0 cosine)")
     fact_hits = search(conn, embeddings)

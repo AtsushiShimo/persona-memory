@@ -167,8 +167,15 @@ def process_episode(
 
     results: list[tuple[FactCandidate, str]] = []
     for cand in candidates:
+        # value 単独ではなく `<category>/<key>: <value>` を embed する。
+        # nomic-embed-text は短い・OOV-like な入力 (例: 「糖尿病」「MVP」「猫」) を
+        # 同じ default embedding に collapse させるため、value 単独だと無関係な
+        # fact 同士が cosine 距離 0 で衝突する。category/key を前置して長く・diverse
+        # なテキストにすることで衝突確率を大幅に下げる (boot 層は upgrade.py で
+        # 既にこのフォーマット)。
+        embed_text = f"{cand.category}/{cand.key}: {cand.value}"
         try:
-            embedding = client.embed(embed_model, cand.value)
+            embedding = client.embed(embed_model, embed_text)
         except Exception:
             embedding = []
         match = find_match(conn, cand.category, cand.key, embedding)

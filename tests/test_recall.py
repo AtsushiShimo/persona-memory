@@ -29,7 +29,10 @@ class FakeRecallClient:
     search_history: bool = False
     summary: str = "深煎り好き"  # summarize_recall が返す要約文
     embedding_map: dict[str, list[float]] = field(default_factory=dict)
-    default_embedding: list[float] = field(default_factory=lambda: [0.0] * 768)
+    # 新仕様: recall は発話全文を embed する。テストでは map に発話文字列を
+    # 入れていなくても fact 側の vector と一致させたいので、default を
+    # [1.0]+[0]*767 にする (fact 登録側も同じ vector を使う)。
+    default_embedding: list[float] = field(default_factory=lambda: [1.0] + [0.0] * 767)
 
     def generate(self, model: str, prompt: str) -> str:
         if "search_history" in prompt:

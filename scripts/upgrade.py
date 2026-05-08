@@ -65,9 +65,66 @@ def _backfill_episode_embeddings(conn, client) -> int:
     return n
 
 
+def _purge_superseded_embeddings(conn) -> int:
+    """superseded fact の embedding を fact_embeddings から削除する.
+
+    旧 supersede() は embedding を残していたため、recall の vec0 knn で
+    active 外の古い embedding が枠を喰い、関連 fact が漏れる現象があった。
+    新しい supersede() は削除するが、過去に蓄積された残骸を一括クリーン。
+    戻り値: 削除した件数.
+    """
+    cur = conn.execute(
+        "DELETE FROM fact_embeddings WHERE fact_id IN ("
+        "  SELECT id FROM facts WHERE status='superseded'"
+        ")"
+    )
+    conn.commit()
+    return cur.rowcount or 0
+
+
+def _refresh_fact_embeddings(conn, client) -> int:
+    """全 active facts の embedding を `<category>/<key>: <value>` 形式で再生成する.
+
+    write 経路が以前 value 単独で embed していたため、短い fact value
+    (例: 「糖尿病」「まろん」) は nomic-embed-text の OOV collapse で
+    無関係な fact と cosine 距離 0 で衝突していた。新フォーマットで
+    全 fact を統一すると衝突が解消する。idempotent (何度走らせても同結果)。
+
+    戻り値: 再生成した件数.
+    """
+    rows = conn.execute(
+        "SELECT id, category, key, value FROM facts "
+        "WHERE status='active' ORDER BY id"
+    ).fetchall()
+    n = 0
+    for fid, cat, key, val in rows:
+        try:
+            vec = client.embed(EMBED_MODEL, f"{cat}/{key}: {val}")
+            if not vec:
+                continue
+            # vec0 は INSERT OR REPLACE をサポートしないため DELETE + INSERT で上書き
+            conn.execute("DELETE FROM fact_embeddings WHERE fact_id=?", (fid,))
+            conn.execute(
+                "INSERT INTO fact_embeddings(fact_id, embedding) VALUES (?, ?)",
+                (fid, pack(vec)),
+            )
+            conn.commit()
+            n += 1
+        except Exception as e:
+            print(
+                f"  WARN refresh fact embedding failed (fact_id={fid}): {e}",
+                file=sys.stderr,
+            )
+    return n
+
+
 def upgrade(db_path: Path) -> dict[str, int]:
-    """戻り値: {'inserted', 'updated', 'unchanged', 'deprecated', 'episodes_embedded'} のカウント."""
-    counts = {"inserted": 0, "updated": 0, "unchanged": 0, "deprecated": 0, "episodes_embedded": 0}
+    """戻り値: 各操作のカウント."""
+    counts = {
+        "inserted": 0, "updated": 0, "unchanged": 0,
+        "deprecated": 0, "episodes_embedded": 0,
+        "facts_re_embedded": 0, "superseded_purged": 0,
+    }
     conn = connect(db_path)
     client = OllamaClient()
     try:
@@ -151,6 +208,22 @@ def upgrade(db_path: Path) -> dict[str, int]:
         if n > 0:
             print(f"  backfilled embeddings for {n} episode(s)")
 
+        # 4. superseded fact の embedding を一括削除
+        #    (旧 supersede() が残していた残骸を消す。recall の vec0 knn 枠を
+        #    active 外の古い embedding が喰う問題を解消)
+        purged = _purge_superseded_embeddings(conn)
+        counts["superseded_purged"] = purged
+        if purged > 0:
+            print(f"  purged {purged} stale embedding(s) of superseded facts")
+
+        # 5. fact_embeddings を新フォーマット `<category>/<key>: <value>`
+        #    で全件再生成 (旧 write 経路で value 単独 embed されていた fact が
+        #    OOV collapse で衝突していたため一斉に修復)
+        m = _refresh_fact_embeddings(conn, client)
+        counts["facts_re_embedded"] = m
+        if m > 0:
+            print(f"  re-embedded {m} fact(s) with category/key/value format")
+
     finally:
         conn.close()
     return counts
@@ -187,7 +260,9 @@ def main() -> None:
         f"upgrade summary: inserted={counts['inserted']}, "
         f"updated={counts['updated']}, unchanged={counts['unchanged']}, "
         f"deprecated={counts['deprecated']}, "
-        f"episodes_embedded={counts['episodes_embedded']}"
+        f"episodes_embedded={counts['episodes_embedded']}, "
+        f"superseded_purged={counts['superseded_purged']}, "
+        f"facts_re_embedded={counts['facts_re_embedded']}"
     )
 
 

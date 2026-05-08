@@ -52,7 +52,9 @@ def recall(
         return ""
     buffer = fetch_buffer(conn, buffer_n)
 
-    # 1. LLM が発話を解析 (キーワード + 履歴参照意図)
+    # 1. LLM が発話を解析 (相槌スキップ判定 + 履歴参照意図)
+    #    keywords が空 = 「OK / ありがとう」 等の相槌なので recall skip。
+    #    keywords 自体は episodes 検索ヒント等のために残すが、embed 対象ではない。
     analysis = analyze_query(content, buffer, client, model=recall_model)
     if debug_enabled():
         log_keywords(content, buffer, analysis.keywords)
@@ -61,19 +63,19 @@ def recall(
             log_final_prompt("")
         return ""
 
-    # 2. 各キーワードを embed
-    embeddings: list[list[float]] = []
-    for kw in analysis.keywords:
-        try:
-            emb = client.embed(embed_model, kw)
-            if emb:
-                embeddings.append(emb)
-        except Exception:
-            continue
-    if not embeddings:
+    # 2. 発話全文を 1 回 embed する (短い個別 keyword を embed すると
+    #    nomic-embed-text の OOV collapse で「MVP」「Phase 1」「猫」 等が
+    #    全て同じ default embedding に化け、無関係な fact と cosine 距離 0
+    #    で偽 hit する。発話全文なら長く・diverse でこの問題が起きない)。
+    try:
+        query_emb = client.embed(embed_model, content)
+    except Exception:
+        query_emb = []
+    if not query_emb:
         if debug_enabled():
             log_final_prompt("")
         return ""
+    embeddings: list[list[float]] = [query_emb]
 
     # 3. facts 検索
     hits = search(conn, embeddings)

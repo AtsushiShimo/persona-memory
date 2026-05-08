@@ -18,11 +18,14 @@ from scripts.shared.embedding import pack
 
 JST = timezone(timedelta(hours=9))
 RECENCY_LAMBDA = float(os.environ.get("PERSONA_RECALL_RECENCY_LAMBDA", "0.05"))
-TOP_K_PER_KEYWORD = int(os.environ.get("PERSONA_RECALL_TOP_K_PER_KEYWORD", "10"))
+TOP_K_PER_KEYWORD = int(os.environ.get("PERSONA_RECALL_TOP_K_PER_KEYWORD", "25"))
 # cosine 距離スケール [0, 2]:
 #   0.0 = 完全一致 / 0.3 = 強い類似 / 0.5 = 弱い類似 / 1.0 = 直交 / 2.0 = 真逆
-DISTANCE_MAX = float(os.environ.get("PERSONA_RECALL_DISTANCE_MAX", "0.5"))
-FINAL_TOP_K = int(os.environ.get("PERSONA_RECALL_FINAL_TOP_K", "8"))
+# nomic-embed-text の日本語短文は distance が 0.35-0.55 の狭帯域に圧縮される
+# ため、関連 fact を漏らさないよう threshold は緩めに取り、最終的な関連性
+# 判定は summarize_recall LLM (役割: librarian) に委ねる。
+DISTANCE_MAX = float(os.environ.get("PERSONA_RECALL_DISTANCE_MAX", "0.6"))
+FINAL_TOP_K = int(os.environ.get("PERSONA_RECALL_FINAL_TOP_K", "15"))
 
 
 @dataclass
