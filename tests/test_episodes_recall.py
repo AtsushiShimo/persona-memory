@@ -147,9 +147,15 @@ def test_format_no_section_when_both_empty():
 # ── recall full path with trigger ───────────────────────────────────────────
 
 def test_recall_searches_episodes_when_llm_says_history(db):
-    """LLM が search_history=true を返した時に episodes が検索され、要約に反映."""
-    save_episode(db, "user", "コーヒーは深煎りが好き", "s1")
+    """LLM が search_history=true を返した時に episodes が vec 検索され、要約に反映."""
+    from scripts.shared.embedding import pack
+    eid = save_episode(db, "user", "コーヒーは深煎りが好き", "s1")
     save_episode(db, "user", "履歴を見せて", "s1")
+    # episode_embeddings に手動で埋め込む (新しい recall は vec0 検索)
+    db.execute(
+        "INSERT INTO episode_embeddings(episode_id, embedding) VALUES (?, ?)",
+        (eid, pack([1.0] + [0.0] * 767)),
+    )
     db.commit()
 
     client = FakeRecallClient(

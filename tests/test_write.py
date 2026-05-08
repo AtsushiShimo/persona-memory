@@ -271,3 +271,17 @@ def test_process_episode_no_facts_extracted(db):
     client = FakeClient(facts=[])
     results = process_episode(db, eid, buffer_n=3, client=client)
     assert results == []
+
+
+def test_process_episode_embeds_episode_for_recall(db):
+    """process_episode は副次的に episode 全文を embed して
+    episode_embeddings に格納する (recall 時のベクトル検索用)."""
+    eid = save_episode(db, role="user", content="コーヒー好き", session_id="s1")
+    client = FakeClient(facts=[])  # fact 抽出は無くても episode は embed される
+    process_episode(db, eid, buffer_n=3, client=client)
+
+    row = db.execute(
+        "SELECT episode_id FROM episode_embeddings WHERE episode_id=?",
+        (eid,),
+    ).fetchone()
+    assert row is not None

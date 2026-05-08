@@ -95,6 +95,63 @@ def test_upgrade_deprecate_no_op_when_absent(db_path: Path):
     assert counts["deprecated"] == 0
 
 
+def test_upgrade_backfills_missing_episode_embeddings(db_path: Path):
+    """既存 episodes で episode_embeddings 未登録のものを backfill する."""
+    from scripts.db.connection import connect
+    from scripts.db.repo import save_episode
+
+    # episodes を 3 件追加 (どれも episode_embeddings には未登録)
+    conn = connect(db_path)
+    try:
+        save_episode(conn, "user", "コーヒー好き", "s1")
+        save_episode(conn, "assistant", "了解", "s1")
+        save_episode(conn, "user", "ペットの話", "s1")
+    finally:
+        conn.close()
+
+    # backfill 走らせる
+    fake_vec = [0.1] * 768
+    with patch("scripts.upgrade.OllamaClient") as Mock:
+        Mock.return_value.embed.return_value = fake_vec
+        counts = upgrade(db_path)
+
+    assert counts["episodes_embedded"] == 3
+
+    # episode_embeddings に 3 件入った
+    conn = connect(db_path)
+    try:
+        n = conn.execute("SELECT COUNT(*) FROM episode_embeddings").fetchone()[0]
+    finally:
+        conn.close()
+    assert n == 3
+
+
+def test_upgrade_skips_already_embedded_episodes(db_path: Path):
+    """既に episode_embeddings に登録済みの episode は backfill しない."""
+    from scripts.db.connection import connect
+    from scripts.db.repo import save_episode
+    from scripts.shared.embedding import pack
+
+    conn = connect(db_path)
+    try:
+        eid1 = save_episode(conn, "user", "既存の埋め込み済み", "s1")
+        save_episode(conn, "user", "未登録", "s1")
+        conn.execute(
+            "INSERT INTO episode_embeddings(episode_id, embedding) VALUES (?, ?)",
+            (eid1, pack([0.5] * 768)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with patch("scripts.upgrade.OllamaClient") as Mock:
+        Mock.return_value.embed.return_value = [0.1] * 768
+        counts = upgrade(db_path)
+
+    # 未登録の 1 件だけ backfill
+    assert counts["episodes_embedded"] == 1
+
+
 def test_upgrade_inserts_missing_defaults(db_path: Path):
     """default が一つも無い DB に upgrade を走らせると全部 insert."""
     # seed_persona は呼ばない = ペルソナ属性も default も無い空の DB

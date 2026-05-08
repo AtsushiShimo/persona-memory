@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""プラグイン更新後の non-destructive な boot 層 default refresh.
+"""プラグイン更新後の non-destructive な boot 層 default refresh + episode 埋め込み backfill.
 
 `/persona-memory:upgrade` から呼ばれる。idempotent:
 - DEFAULT_BOOT_FACTS の各 (category, key) が DB に無ければ追加
@@ -9,6 +9,8 @@
 - ペルソナ固有属性 (role/name/personality/gender/first_person/
   speech_style/address_user) には触らない
 - episodes / 他 category facts も無傷
+- **episode_embeddings に未登録の episode を backfill** (recall 時の
+  ベクトル検索の対象にするため)
 
 ユーザーが運用中に蓄積した会話・好み・知識を一切損なわず、
 共通の振る舞いルールだけを最新に保つ。
@@ -31,9 +33,41 @@ from scripts.shared.ollama import OllamaClient
 EMBED_MODEL = os.environ.get("PERSONA_EMBED_MODEL", "nomic-embed-text")
 
 
+def _backfill_episode_embeddings(conn, client) -> int:
+    """episode_embeddings に未登録の episodes を embedding 化して埋める.
+
+    戻り値: backfill した件数.
+    """
+    rows = conn.execute(
+        """
+        SELECT e.id, e.content
+        FROM episodes e
+        LEFT JOIN episode_embeddings ee ON ee.episode_id = e.id
+        WHERE ee.episode_id IS NULL
+          AND e.content IS NOT NULL AND e.content != ''
+        ORDER BY e.id
+        """
+    ).fetchall()
+    n = 0
+    for ep_id, content in rows:
+        try:
+            vec = client.embed(EMBED_MODEL, content)
+            if not vec:
+                continue
+            conn.execute(
+                "INSERT OR REPLACE INTO episode_embeddings(episode_id, embedding) VALUES (?, ?)",
+                (ep_id, pack(vec)),
+            )
+            conn.commit()
+            n += 1
+        except Exception as e:
+            print(f"  WARN backfill embedding failed (episode_id={ep_id}): {e}", file=sys.stderr)
+    return n
+
+
 def upgrade(db_path: Path) -> dict[str, int]:
-    """戻り値: {'inserted', 'updated', 'unchanged', 'deprecated'} のカウント."""
-    counts = {"inserted": 0, "updated": 0, "unchanged": 0, "deprecated": 0}
+    """戻り値: {'inserted', 'updated', 'unchanged', 'deprecated', 'episodes_embedded'} のカウント."""
+    counts = {"inserted": 0, "updated": 0, "unchanged": 0, "deprecated": 0, "episodes_embedded": 0}
     conn = connect(db_path)
     client = OllamaClient()
     try:
@@ -111,6 +145,12 @@ def upgrade(db_path: Path) -> dict[str, int]:
             label = "inserted" if old_id is None else "updated"
             print(f"  {label} [{category}/{key}]")
 
+        # 3. episodes embedding backfill (recall 時のベクトル検索のため)
+        n = _backfill_episode_embeddings(conn, client)
+        counts["episodes_embedded"] = n
+        if n > 0:
+            print(f"  backfilled embeddings for {n} episode(s)")
+
     finally:
         conn.close()
     return counts
@@ -146,7 +186,8 @@ def main() -> None:
     print(
         f"upgrade summary: inserted={counts['inserted']}, "
         f"updated={counts['updated']}, unchanged={counts['unchanged']}, "
-        f"deprecated={counts['deprecated']}"
+        f"deprecated={counts['deprecated']}, "
+        f"episodes_embedded={counts['episodes_embedded']}"
     )
 
 

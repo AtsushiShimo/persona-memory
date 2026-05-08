@@ -150,6 +150,7 @@ def bump_access_counts(conn: sqlite3.Connection, fact_ids: list[int]) -> None:
 
 EPISODE_LIKE_LIMIT = int(os.environ.get("PERSONA_RECALL_EPISODE_LIMIT", "30"))
 EPISODE_CONTENT_PREVIEW = int(os.environ.get("PERSONA_RECALL_EPISODE_PREVIEW", "300"))
+EPISODE_DISTANCE_MAX = float(os.environ.get("PERSONA_RECALL_EPISODE_DISTANCE_MAX", "0.8"))
 
 
 @dataclass
@@ -165,13 +166,9 @@ def search_episodes_by_keywords(
     keywords: list[str],
     limit: int = EPISODE_LIKE_LIMIT,
 ) -> list[RecalledEpisode]:
-    """SQL LIKE で episodes.content を全文部分一致検索.
+    """SQL LIKE で episodes.content を全文部分一致検索 (back-compat 用).
 
-    同一 (content, role) の重複は GROUP BY で潰す (連投された同じ質問が
-    上位を占めるのを防ぐ)。各重複グループからは最新 id を採用。
-
-    embedding がまだ episodes に張られていないので keyword based の単純検索。
-    将来 episode_embeddings が populate されたらベクトル検索に置き換え可能。
+    新コードは search_episodes_by_embeddings を使うこと。
     """
     if not keywords:
         return []
@@ -193,6 +190,72 @@ def search_episodes_by_keywords(
     ).fetchall()
     out: list[RecalledEpisode] = []
     for r in rows:
+        content = r[2] or ""
+        if EPISODE_CONTENT_PREVIEW > 0 and len(content) > EPISODE_CONTENT_PREVIEW:
+            content = content[:EPISODE_CONTENT_PREVIEW] + "…"
+        out.append(RecalledEpisode(
+            episode_id=r[0], role=r[1], content=content, timestamp=r[3],
+        ))
+    return out
+
+
+def _search_episodes_one(
+    conn: sqlite3.Connection,
+    embedding: list[float],
+    k: int = EPISODE_LIKE_LIMIT,
+    distance_max: float = EPISODE_DISTANCE_MAX,
+) -> list[tuple[int, str, str, str, float]]:
+    """1 keyword embedding で episodes をベクトル検索.
+
+    重複 (content, role) は GROUP BY で潰し、各グループの最小距離を採用。
+    """
+    blob = pack(embedding)
+    rows = conn.execute(
+        """
+        WITH knn AS (
+          SELECT episode_id, distance
+          FROM episode_embeddings
+          WHERE embedding MATCH ? AND k = ?
+        )
+        SELECT MAX(e.id) AS id, e.role, e.content, MAX(e.timestamp) AS timestamp,
+               MIN(knn.distance) AS distance
+        FROM knn
+        JOIN episodes e ON e.id = knn.episode_id
+        GROUP BY e.content, e.role
+        HAVING MIN(knn.distance) <= ?
+        ORDER BY MIN(knn.distance)
+        """,
+        (blob, k, distance_max),
+    ).fetchall()
+    return [(r[0], r[1], r[2], r[3], r[4]) for r in rows]
+
+
+def search_episodes_by_embeddings(
+    conn: sqlite3.Connection,
+    embeddings: list[list[float]],
+    final_limit: int = EPISODE_LIKE_LIMIT,
+    distance_max: float = EPISODE_DISTANCE_MAX,
+) -> list[RecalledEpisode]:
+    """複数キーワード embedding で episodes を vec0 検索 → 重複除去 → 距離順.
+
+    - 各 embedding ごとに _search_episodes_one
+    - (content, role) で dedup、最小距離を採用
+    - 距離順 top final_limit
+    """
+    if not embeddings:
+        return []
+    seen: dict[tuple[str, str], tuple[int, str, str, str, float]] = {}
+    for emb in embeddings:
+        if not emb:
+            continue
+        for hit in _search_episodes_one(conn, emb, distance_max=distance_max):
+            key = (hit[1], hit[2])  # (role, content)
+            cur = seen.get(key)
+            if cur is None or hit[4] < cur[4]:
+                seen[key] = hit
+    ranked = sorted(seen.values(), key=lambda h: h[4])
+    out: list[RecalledEpisode] = []
+    for r in ranked[:final_limit]:
         content = r[2] or ""
         if EPISODE_CONTENT_PREVIEW > 0 and len(content) > EPISODE_CONTENT_PREVIEW:
             content = content[:EPISODE_CONTENT_PREVIEW] + "…"

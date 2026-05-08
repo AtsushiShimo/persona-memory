@@ -22,6 +22,7 @@ from scripts.db.connection import connect
 from scripts.db.repo import get_meta, set_meta
 from scripts.escalate.claude_p import invoke_claude, log_escalation
 from scripts.escalate.decide import estimate_tokens, should_escalate
+from scripts.shared.embedding import pack
 from scripts.shared.env import get_db_path
 from scripts.shared.ollama import LLMClient, OllamaClient
 from scripts.write.extract import (
@@ -91,6 +92,33 @@ def _extract_via_claude(role: str, content: str, buffer: list[dict]) -> list[Fac
     return parse_response(r.text)
 
 
+def _embed_episode(
+    conn: sqlite3.Connection,
+    episode_id: int,
+    content: str,
+    client: LLMClient,
+    embed_model: str,
+) -> None:
+    """episode 全文を embedding 化して episode_embeddings に格納.
+
+    既に entry がある場合は INSERT OR REPLACE で更新。
+    失敗時は何もしない (recall 側で当該 episode が引けないだけで他には影響なし)。
+    """
+    if not content or not content.strip():
+        return
+    try:
+        vec = client.embed(embed_model, content)
+        if not vec:
+            return
+        conn.execute(
+            "INSERT OR REPLACE INTO episode_embeddings(episode_id, embedding) VALUES (?, ?)",
+            (episode_id, pack(vec)),
+        )
+        conn.commit()
+    except Exception as e:
+        sys.stderr.write(f"[persona-memory] episode embedding failed (id={episode_id}): {e}\n")
+
+
 def process_episode(
     conn: sqlite3.Connection,
     episode_id: int,
@@ -99,11 +127,18 @@ def process_episode(
     write_model: str = WRITE_MODEL,
     embed_model: str = EMBED_MODEL,
 ) -> list[tuple[FactCandidate, str]]:
-    """1 episode を処理し、(candidate, action) のリストを返す。"""
+    """1 episode を処理し、(candidate, action) のリストを返す。
+
+    副作用: 当該 episode の content を embedding 化して episode_embeddings に格納
+    (recall 時のベクトル検索の対象になる)。
+    """
     episode = fetch_episode(conn, episode_id)
     if not episode:
         return []
     buffer = fetch_buffer(conn, episode_id, buffer_n)
+
+    # episode 全文を embedding 化 (recall 時のベクトル検索のため)
+    _embed_episode(conn, episode_id, episode["content"], client, embed_model)
 
     # 入力サイズで long_input エスカレーション判定
     full_input = episode["content"] + "\n" + "\n".join(b.get("content", "") for b in buffer)

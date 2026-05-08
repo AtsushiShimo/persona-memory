@@ -22,7 +22,7 @@ from scripts.recall.extract import RECALL_MODEL, analyze_query
 from scripts.recall.search import (
     bump_access_counts,
     search,
-    search_episodes_by_keywords,
+    search_episodes_by_embeddings,
 )
 from scripts.recall.summarize import summarize_recall
 from scripts.shared.ollama import LLMClient
@@ -88,9 +88,10 @@ def recall(
         ])
 
     # 4. episodes 検索 (LLM が「履歴参照」 と判断したとき)
+    #    facts と同じく vec0 ベクトル検索で意味的に近い episode を引く
     episodes_hits = []
     if analysis.search_history:
-        episodes_hits = search_episodes_by_keywords(conn, analysis.keywords)
+        episodes_hits = search_episodes_by_embeddings(conn, embeddings)
 
     if not hits and not episodes_hits:
         if debug_enabled():
