@@ -7,7 +7,7 @@ from pathlib import Path
 import sqlite_vec
 
 EMBEDDING_DIM = 768  # nomic-embed-text default
-SCHEMA_VERSION = "2"  # redesign era
+SCHEMA_VERSION = "3"  # cosine distance era
 
 
 def connect(db_path: Path) -> sqlite3.Connection:

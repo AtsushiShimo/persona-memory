@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from scripts.shared.embedding import pack
 
-EMBED_DISTANCE_MAX = 0.35  # 近傍と判定する閾値 (テストで調整可能)
+EMBED_DISTANCE_MAX = 0.4  # cosine 距離スケール、近傍 fact 判定の閾値 (テストで調整可能)
 
 
 @dataclass

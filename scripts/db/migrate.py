@@ -18,16 +18,19 @@ def init_db(db_path: Path, embedding_dim: int = EMBEDDING_DIM) -> None:
         with open(SCHEMA_FILE) as f:
             conn.executescript(f.read())
 
+        # distance_metric=cosine: nomic-embed-text は非正規化 vector を返すため
+        # L2 (vec0 default) では semantic similarity が判別できない。cosine 指定で
+        # スケール非依存・方向のみの距離計算に切り替える (構文確認済み: sqlite-vec 0.1.9)
         conn.execute(
             f"CREATE VIRTUAL TABLE IF NOT EXISTS fact_embeddings USING vec0("
             f"  fact_id INTEGER PRIMARY KEY,"
-            f"  embedding FLOAT[{embedding_dim}]"
+            f"  embedding FLOAT[{embedding_dim}] distance_metric=cosine"
             f")"
         )
         conn.execute(
             f"CREATE VIRTUAL TABLE IF NOT EXISTS episode_embeddings USING vec0("
             f"  episode_id INTEGER PRIMARY KEY,"
-            f"  embedding FLOAT[{embedding_dim}]"
+            f"  embedding FLOAT[{embedding_dim}] distance_metric=cosine"
             f")"
         )
 

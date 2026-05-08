@@ -127,3 +127,46 @@ def test_vec_tables_accept_embeddings(db: sqlite3.Connection):
     db.commit()
     row = db.execute("SELECT fact_id FROM fact_embeddings").fetchone()
     assert row[0] == fact_id
+
+
+def test_vec_tables_use_cosine_distance(db: sqlite3.Connection):
+    """vec0 は cosine 距離で動く (L2 ではない)。スケール無視で方向のみで判断。"""
+    import struct
+
+    # facts に 3 件、別スケールの 'x 軸方向' / '直交' / '真逆' を入れる
+    rows = []
+    for key, vec in [
+        ("unit_x", [1.0] + [0.0] * (EMBEDDING_DIM - 1)),
+        ("scaled_x", [10.0] + [0.0] * (EMBEDDING_DIM - 1)),  # 同方向、スケール 10x
+        ("orthogonal", [0.0, 1.0] + [0.0] * (EMBEDDING_DIM - 2)),  # 直交
+        ("opposite", [-1.0] + [0.0] * (EMBEDDING_DIM - 1)),  # 真逆
+    ]:
+        cur = db.execute(
+            "INSERT INTO facts(category, key, value, importance) VALUES ('skill', ?, 'v', 5)",
+            (key,),
+        )
+        fid = cur.lastrowid
+        blob = struct.pack(f"{EMBEDDING_DIM}f", *vec)
+        db.execute(
+            "INSERT INTO fact_embeddings(fact_id, embedding) VALUES (?, ?)",
+            (fid, blob),
+        )
+        rows.append((key, fid))
+    db.commit()
+
+    # query = 単位 x 軸
+    q = struct.pack(f"{EMBEDDING_DIM}f", *([1.0] + [0.0] * (EMBEDDING_DIM - 1)))
+    hits = db.execute("""
+        SELECT facts.key, fact_embeddings.distance
+        FROM fact_embeddings
+        JOIN facts ON facts.id = fact_embeddings.fact_id
+        WHERE fact_embeddings.embedding MATCH ? AND k = 4
+        ORDER BY fact_embeddings.distance
+    """, (q,)).fetchall()
+    by_key = {h[0]: h[1] for h in hits}
+
+    # cosine 距離: 同方向は 0、スケール違いも 0、直交 1、真逆 2
+    assert abs(by_key["unit_x"] - 0.0) < 1e-4
+    assert abs(by_key["scaled_x"] - 0.0) < 1e-4, f"L2 ならここで非 0、cosine なら 0: {by_key['scaled_x']}"
+    assert abs(by_key["orthogonal"] - 1.0) < 1e-4
+    assert abs(by_key["opposite"] - 2.0) < 1e-4

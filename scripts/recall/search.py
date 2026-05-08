@@ -19,7 +19,9 @@ from scripts.shared.embedding import pack
 JST = timezone(timedelta(hours=9))
 RECENCY_LAMBDA = float(os.environ.get("PERSONA_RECALL_RECENCY_LAMBDA", "0.05"))
 TOP_K_PER_KEYWORD = int(os.environ.get("PERSONA_RECALL_TOP_K_PER_KEYWORD", "10"))
-DISTANCE_MAX = float(os.environ.get("PERSONA_RECALL_DISTANCE_MAX", "0.6"))
+# cosine 距離スケール [0, 2]:
+#   0.0 = 完全一致 / 0.3 = 強い類似 / 0.5 = 弱い類似 / 1.0 = 直交 / 2.0 = 真逆
+DISTANCE_MAX = float(os.environ.get("PERSONA_RECALL_DISTANCE_MAX", "0.5"))
 FINAL_TOP_K = int(os.environ.get("PERSONA_RECALL_FINAL_TOP_K", "8"))
 
 
@@ -157,7 +159,7 @@ EPISODE_CONTENT_PREVIEW = int(os.environ.get("PERSONA_RECALL_EPISODE_PREVIEW", "
 # - 重複除去後、最終 TARGET_HITS 件だけ採用
 # - DB が rich になるほど『TARGET_HITS 番目の距離』 が自然と厳しくなる (= 動的)
 # - DB が sparse なら無理に広げず、HARD_MAX 内のものだけ返す
-EPISODE_HARD_DISTANCE_MAX = float(os.environ.get("PERSONA_RECALL_EPISODE_HARD_MAX", "1.2"))
+EPISODE_HARD_DISTANCE_MAX = float(os.environ.get("PERSONA_RECALL_EPISODE_HARD_MAX", "0.7"))
 EPISODE_TARGET_HITS = int(os.environ.get("PERSONA_RECALL_EPISODE_TARGET", "8"))
 EPISODE_PULL_K = int(os.environ.get("PERSONA_RECALL_EPISODE_PULL", "30"))
 
