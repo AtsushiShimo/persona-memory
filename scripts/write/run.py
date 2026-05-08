@@ -36,7 +36,10 @@ from scripts.write.persist import apply_candidate
 from scripts.write.similarity import find_match
 
 EMBED_MODEL = os.environ.get("PERSONA_EMBED_MODEL", "nomic-embed-text")
-DEFAULT_BUFFER_N = int(os.environ.get("PERSONA_BUFFER_N", "3"))
+# write 側のバッファは広めに取る (= 多ターンに渡る議論で確定した決定を、
+# その確定ターンで即時 fact 化するため)。recall 側の BUFFER_N=3 とは独立。
+DEFAULT_BUFFER_N = int(os.environ.get("PERSONA_WRITE_BUFFER_N",
+                                       os.environ.get("PERSONA_BUFFER_N", "10")))
 PROCESSED_META_KEY = "write_processed_max_id"
 
 
