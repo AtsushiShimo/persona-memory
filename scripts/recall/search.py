@@ -165,7 +165,10 @@ def search_episodes_by_keywords(
     keywords: list[str],
     limit: int = EPISODE_LIKE_LIMIT,
 ) -> list[RecalledEpisode]:
-    """SQL LIKE で episodes.content を全文部分一致検索 (新しい順).
+    """SQL LIKE で episodes.content を全文部分一致検索.
+
+    同一 (content, role) の重複は GROUP BY で潰す (連投された同じ質問が
+    上位を占めるのを防ぐ)。各重複グループからは最新 id を採用。
 
     embedding がまだ episodes に張られていないので keyword based の単純検索。
     将来 episode_embeddings が populate されたらベクトル検索に置き換え可能。
@@ -178,8 +181,14 @@ def search_episodes_by_keywords(
     where = " OR ".join(["content LIKE ?"] * len(cleaned))
     params = [f"%{k}%" for k in cleaned] + [limit]
     rows = conn.execute(
-        f"SELECT id, role, content, timestamp FROM episodes "
-        f"WHERE {where} ORDER BY id DESC LIMIT ?",
+        f"""
+        SELECT MAX(id) AS id, role, content, MAX(timestamp) AS timestamp
+        FROM episodes
+        WHERE {where}
+        GROUP BY content, role
+        ORDER BY MAX(id) DESC
+        LIMIT ?
+        """,
         params,
     ).fetchall()
     out: list[RecalledEpisode] = []

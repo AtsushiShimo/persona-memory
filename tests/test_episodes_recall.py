@@ -92,6 +92,31 @@ def test_search_episodes_orders_newest_first(db):
     assert "古い" in hits[1].content
 
 
+def test_search_episodes_dedupes_identical_content(db):
+    """連投された同じ質問は重複して返さない (GROUP BY content, role)."""
+    save_episode(db, "user", "ペットの名前覚えてる?", "s1")
+    save_episode(db, "user", "ペットの名前覚えてる?", "s1")
+    save_episode(db, "user", "ペットの名前覚えてる?", "s1")
+    save_episode(db, "assistant", "申し訳ありません、思い出せません", "s1")
+    save_episode(db, "user", "ペットの名前覚えてる?", "s1")  # まだ重複
+
+    hits = search_episodes_by_keywords(db, ["ペット"])
+    # 同じ user 質問は 1 件に潰される、assistant 応答は別 role なので残る
+    contents = [(h.role, h.content) for h in hits]
+    assert ("user", "ペットの名前覚えてる?") in contents
+    assert sum(1 for r, c in contents if c == "ペットの名前覚えてる?") == 1
+
+
+def test_search_episodes_keeps_distinct_role_for_same_content(db):
+    """role が違えば content が同じでも別レコードとして残る."""
+    save_episode(db, "user", "OK", "s1")
+    save_episode(db, "assistant", "OK", "s1")
+
+    hits = search_episodes_by_keywords(db, ["OK"])
+    roles = sorted(h.role for h in hits)
+    assert roles == ["assistant", "user"]
+
+
 def test_search_episodes_truncates_long_content(db):
     long_text = "コーヒー" + "あ" * 1000
     save_episode(db, "user", long_text, "s1")
