@@ -148,7 +148,7 @@ def bump_access_counts(conn: sqlite3.Connection, fact_ids: list[int]) -> None:
 
 # ── episodes 検索 (会話履歴を辿る用) ──────────────────────────────────────────
 
-EPISODE_LIKE_LIMIT = int(os.environ.get("PERSONA_RECALL_EPISODE_LIMIT", "8"))
+EPISODE_LIKE_LIMIT = int(os.environ.get("PERSONA_RECALL_EPISODE_LIMIT", "30"))
 EPISODE_CONTENT_PREVIEW = int(os.environ.get("PERSONA_RECALL_EPISODE_PREVIEW", "300"))
 
 
