@@ -114,3 +114,7 @@ DEFAULT_BOOT_FACTS: list[tuple[str, str, str, int]] = [
         9,
     ),
 ]
+
+
+# DEFAULT_BOOT_FACTS の (category, key) を集合化 (write LLM 上書き保護用)
+PROTECTED_KEYS = {(cat, key) for cat, key, _, _ in DEFAULT_BOOT_FACTS}

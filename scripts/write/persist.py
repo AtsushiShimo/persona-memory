@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from scripts.boot.defaults import PROTECTED_KEYS
 from scripts.boot.inject import BOOT_CATEGORIES, mark_dirty
 from scripts.shared.embedding import pack
 from scripts.write.extract import FactCandidate
@@ -80,8 +81,17 @@ def apply_candidate(
     boot 層 (persona / rule) を触った場合は dirty フラグを立て、次の
     UserPromptSubmit hook で即時再注入される (§8.1).
 
-    Returns: "reinforce" / "supersede" / "insert"
+    プラグイン default として shipping されている (category, key) ペアは
+    write LLM からの上書きを物理的に拒否する (PROTECTED_KEYS)。
+    これにより無関係な内容で default 行動指針が破壊される事故を防ぐ。
+
+    Returns: "reinforce" / "supersede" / "insert" / "protected"
     """
+    if (candidate.category, candidate.key) in PROTECTED_KEYS:
+        # default の boot 層 key は write LLM から保護
+        # (例: persona/natural_voice が renju 情報で上書きされる事故を防ぐ)
+        return "protected"
+
     if match is None:
         insert_new(conn, candidate, embedding, source)
         if candidate.category in BOOT_CATEGORIES:
