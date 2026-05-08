@@ -41,43 +41,50 @@ class FactCandidate:
 
 
 _PROMPT_TEMPLATE = """\
-あなたはユーザーとアシスタントの会話から、長期記憶として残すべき事実 (fact) を抽出するアシスタントです。
+ユーザーとアシスタントの会話から、長期記憶として残すべき事実 (fact) を抽出するツール。
 
-## category 選択
-- persona: ユーザーがエージェント (あなた) に求める振る舞い・性格 (例: 「率直に指摘して」)
-- rule: 守るべきハード制約 (例: 「main に force push 禁止」)
-- preference: ユーザーの個人的な好み (例: コーヒーは深煎り)
-- aversion: ユーザーが避けたいもの (例: Java は書きたくない)
-- profile: ユーザーの属性 (役職、住居、家族構成など)
-- skill: 技術知識・経験 (本人の経験 + 調査で得た知識の両方)
-- context: 進行中のプロジェクト・状況・調査結論
+## category と key の対応
+- **persona**: ユーザーがエージェントに求める振る舞い (例: 「率直に話して」)
+- **rule**: 守るべきハード制約 (例: 「main に force push 禁止」)
+- **preference**: ユーザーの個人的な好み (例: コーヒーは深煎り)
+- **aversion**: ユーザーが避けたいもの (例: Java は書きたくない)
+- **profile**: ユーザーの属性・家族・ペット・健康など (例: 糖尿病、ペットの名前)
+- **skill**: 技術知識・経験 (本人経験 + 調査で得た知識の両方)
+- **context**: 進行中のプロジェクト・調査結論・決定事項
+
+## key/value の品質ルール (絶対遵守)
+
+1. **key は category と value の両方に整合させる**:
+   - 良い例: `category=profile, key=health_diabetes, value=糖尿病があり甘い物を控えている`
+   - 悪い例: `category=profile, key=dog_maron, value=糖尿病があり…` (key=犬なのに value=健康、不一致)
+   - 悪い例: `category=rule, key=deep_research_recommendation, value=…推奨` (推奨は rule じゃなく context)
+2. **1 fact = 1 内容**: 複数の事実を 1 つの fact に詰めない
+3. **key は snake_case 英数字、内容を表す**: `coffee_preference`, `pet_dog_name`, `health_diabetes` 等
+4. **同じ value を category 違いで複数回 fact 化しない**
 
 ## 抽出対象
-(a) ユーザーが述べた個人的な事実 → preference / aversion / profile / skill / context
+(a) ユーザーが述べた個人的事実 → preference / aversion / profile / skill / context
 (b) ユーザーがエージェントに求める振る舞い → persona
 (c) ユーザーが守らせたいハード制約 → rule
-(d) **ツール結果 (WebSearch / WebFetch / Read / Bash 等) から得た、確認済みの外部知識** → 主に skill / context
-   - 例: 「`CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX` は settings.json の env で設定する」
-   - 例: 「sqlite-vec は cosine 距離を MATCH で計算する」
-(e) **会話の中で確定した調査結論・実験結果** → 主に context
-   - 例: 「実装 X はバグがあり Y で代替する方針に決めた」
+(d) ツール結果で **確認済みの** 外部知識 → 主に skill / context
+(e) 会話で **確定した** 調査結論・実装方針・決定事項 → 主に context
 
 ## 除外対象
-- アシスタントの推測・仮説・「〜かもしれない」 「可能性がある」 等の不確定情報
+- アシスタントの推測・仮説 (「〜かもしれない」「可能性がある」)
 - 単なる質問・提案・選択肢提示
-- ツール結果でも「未検証 / 未確認」 のもの (= 引用元として価値が無い)
+- ツール結果でも未検証 / 未確認のもの
 - 雑談・繰り返し・既に DB にある情報の再確認
+- ファイル名・パス・ツール名・モデル名・テーブル名等のメタ情報
+- プラグイン本体の議論 (commit/リリース/bug fix/recall などの内部用語)
 
 ## 出力形式
-- key: snake_case の英数字 (例: coffee_preference, remote_control_env)
-- value: 事実本体を 1-2 行で簡潔に
-- importance: 1-9 の整数
+- importance: 1-9
   - persona / rule: 8-9
   - profile / skill (本人経験): 6-7
-  - skill (調査知識) / context: 5-7
+  - context / skill (調査知識): 5-7
   - preference / aversion: 4-6
-- 抽出対象が無ければ空配列 []
 - 出力は JSON 配列のみ (説明・前置き・コードフェンス禁止)
+- 抽出対象が無ければ `[]`
 
 ## 入力
 
