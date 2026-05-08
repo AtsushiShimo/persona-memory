@@ -200,17 +200,21 @@ def run(episode_ids: Iterable[int], buffer_n: int = DEFAULT_BUFFER_N, client: LL
     if db_path is None:
         return 0
     cli = client or OllamaClient()
-    conn = connect(db_path)
-    try:
-        for eid in episode_ids:
-            try:
-                process_episode(conn, eid, buffer_n, cli)
-                mark_processed(conn, eid)
-            except Exception as e:
-                sys.stderr.write(f"[persona-memory] write process_episode {eid} failed: {e}\n")
-                continue
-    finally:
-        conn.close()
+    # episode 単位で conn を開閉する。process_episode 内では LLM 呼び出し
+    # (10-30s) を含むため、長時間 1 つの conn を保持すると Stop hook 等の
+    # 並行 writer (assistant 発話の save_episode) が DB lock で落ちる。
+    # episode 境界で commit + close することで、他の writer が割り込める
+    # ウィンドウを定期的に作る。
+    for eid in episode_ids:
+        conn = connect(db_path)
+        try:
+            process_episode(conn, eid, buffer_n, cli)
+            mark_processed(conn, eid)
+        except Exception as e:
+            sys.stderr.write(f"[persona-memory] write process_episode {eid} failed: {e}\n")
+            continue
+        finally:
+            conn.close()
     return 0
 
 
