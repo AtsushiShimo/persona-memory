@@ -89,3 +89,9 @@ fi
 log "venv:         $VENV  (shared across all projects)"
 log "persona DB:   $DB_PATH  (project-local)"
 log "models:       light=$LIGHT_MODEL  heavy=$HEAVY_MODEL  embed=$EMBED_MODEL"
+
+# 4. OLLAMA_NUM_PARALLEL を RAM ベースで自動設定
+#    複数プロジェクト/人格を同時起動した時 Ollama の queue がボトルネック化
+#    するのを防ぐ。~/.zshrc に marker 付きブロックを追加 (idempotent)
+log "configuring OLLAMA_NUM_PARALLEL ..."
+"$VENV/bin/python" "$ROOT/scripts/tools/configure_ollama_parallel.py" || true
