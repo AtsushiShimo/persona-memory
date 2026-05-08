@@ -251,18 +251,19 @@ def list_facts(limit: int = 100) -> dict[str, Any]:
 
 @mcp.tool()
 async def health_check() -> dict[str, Any]:
-    """Report DB and Ollama reachability."""
-    out: dict[str, Any] = {}
-    try:
-        out["db_path"] = str(db.db_path())
-        out["embedding_dim"] = db.get_meta("embedding_dim")
-        out["schema_version"] = db.get_meta("schema_version")
-        out["db_reachable"] = True
-    except Exception as e:
-        out["db_reachable"] = False
-        out["db_error"] = str(e)
-    out.update(await health())
-    return out
+    """Comprehensive health check.
+
+    Reports: DB reachability + stats / config integrity / Ollama models /
+    recent ingest health (write backlog, short-value facts). Top-level
+    `ok` / `warnings` / `errors` 集計付き. ペルソナの口調で報告する用途を想定.
+    """
+    import sys
+    from pathlib import Path
+    ROOT = Path(__file__).resolve().parent.parent
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from scripts.health import collect
+    return collect(db.db_path())
 
 
 def run() -> None:

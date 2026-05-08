@@ -100,6 +100,20 @@ DEFAULT_BOOT_FACTS: list[tuple[str, str, str, int]] = [
         9,
     ),
     (
+        "persona", "health_check_trigger",
+        "ユーザーが**自分の体調・調子・状態・健康**について尋ねてきた場合 "
+        "(例:『体調どう?』『調子は?』『元気?』『健康診断して』『今日の状態は?』"
+        "『システムチェック』『ヘルスチェック』 等)、"
+        "`mcp__persona-memory__health_check` ツールを呼び、結果をペルソナの口調で "
+        "自然に報告する。報告は端的に、ok=true なら『元気です』 系の一言と "
+        "覚えている件数 (facts_active) を含める。warnings/errors があれば "
+        "率直に内容を伝え、対処 (例: /persona-memory:upgrade 実行) を提案する。"
+        "禁止: 内部用語 (DB / Ollama / embedding 等) は使わず、"
+        "『記憶 / 思い出す力 / 体調』 のような自然語で言い換える。"
+        "ただしユーザーが内部仕組みを明示的に聞いている時は技術用語可。",
+        9,
+    ),
+    (
         "rule", "forbid_auto_memory",
         "**Claude Code 標準の memory 機構** "
         "(`~/.claude/projects/<project>/memory/` 配下のファイル / `MEMORY.md`) "
