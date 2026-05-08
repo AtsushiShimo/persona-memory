@@ -11,4 +11,5 @@ __pycache__/
 # Generated per-host / per-persona — never commit
 .mcp.json
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 data/
