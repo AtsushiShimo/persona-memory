@@ -218,12 +218,20 @@ def test_recall_empty_when_summary_says_no_match(db):
     assert recall(db, "深煎り好き?", client) == ""
 
 
-def test_recall_empty_when_no_keywords(db):
-    """LLM が [] を返したら additionalContext は空。"""
+def test_recall_runs_even_when_keywords_empty(db):
+    """keywords=[] (= 短い相槌・合意) でも recall は走る。
+
+    「OK」「うん」「ありがとう」 等は意味の無いやり取りではなく、直前の議題への
+    応答なので、過去記憶を踏まえて返答すべき。recall は発話全文を embed して
+    検索 → summarize LLM が curate する設計 (空 keywords でも skip しない)。
+    """
     insert_new(db, FactCandidate("preference", "coffee", "深煎り", 6), [1.0] + [0.0] * 767)
     db.commit()
-    client = FakeRecallClient(keywords=[])
-    assert recall(db, "OK", client) == ""
+    client = FakeRecallClient(keywords=[], summary="深煎り好き")
+    out = recall(db, "OK", client)
+    # recall は走り、summarize 結果を返す (skip しない)
+    assert "## 思い出した記憶" in out
+    assert "深煎り" in out
 
 
 def test_recall_empty_when_no_hits(db):

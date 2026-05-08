@@ -52,16 +52,14 @@ def recall(
         return ""
     buffer = fetch_buffer(conn, buffer_n)
 
-    # 1. LLM が発話を解析 (相槌スキップ判定 + 履歴参照意図)
-    #    keywords が空 = 「OK / ありがとう」 等の相槌なので recall skip。
-    #    keywords 自体は episodes 検索ヒント等のために残すが、embed 対象ではない。
+    # 1. LLM が発話を解析 (履歴参照意図 + keyword hint)
+    #    keywords は debug / episode 検索 hint 用。recall を skip する判断には
+    #    使わない (= 「意味のないやり取り」 という前提を持たない: ユーザーが
+    #    『OK』『うん』『ありがとう』 を返した瞬間こそ、直前の議題を踏まえた
+    #    応答が要る。発話の長短や形に関係なく毎発話 recall する)。
     analysis = analyze_query(content, buffer, client, model=recall_model)
     if debug_enabled():
         log_keywords(content, buffer, analysis.keywords)
-    if not analysis.keywords:
-        if debug_enabled():
-            log_final_prompt("")
-        return ""
 
     # 2. 発話全文を 1 回 embed する (短い個別 keyword を embed すると
     #    nomic-embed-text の OOV collapse で「MVP」「Phase 1」「猫」 等が
