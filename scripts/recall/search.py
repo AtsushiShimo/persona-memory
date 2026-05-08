@@ -150,7 +150,16 @@ def bump_access_counts(conn: sqlite3.Connection, fact_ids: list[int]) -> None:
 
 EPISODE_LIKE_LIMIT = int(os.environ.get("PERSONA_RECALL_EPISODE_LIMIT", "30"))
 EPISODE_CONTENT_PREVIEW = int(os.environ.get("PERSONA_RECALL_EPISODE_PREVIEW", "300"))
-EPISODE_DISTANCE_MAX = float(os.environ.get("PERSONA_RECALL_EPISODE_DISTANCE_MAX", "0.8"))
+
+# adaptive 設計:
+# - HARD_MAX は『明らかに無関係』 を切るだけの広めの距離 (= safety net)
+# - 各キーワードで PULL_K まで拾う (top-K nearest)
+# - 重複除去後、最終 TARGET_HITS 件だけ採用
+# - DB が rich になるほど『TARGET_HITS 番目の距離』 が自然と厳しくなる (= 動的)
+# - DB が sparse なら無理に広げず、HARD_MAX 内のものだけ返す
+EPISODE_HARD_DISTANCE_MAX = float(os.environ.get("PERSONA_RECALL_EPISODE_HARD_MAX", "1.2"))
+EPISODE_TARGET_HITS = int(os.environ.get("PERSONA_RECALL_EPISODE_TARGET", "8"))
+EPISODE_PULL_K = int(os.environ.get("PERSONA_RECALL_EPISODE_PULL", "30"))
 
 
 @dataclass
@@ -202,8 +211,8 @@ def search_episodes_by_keywords(
 def _search_episodes_one(
     conn: sqlite3.Connection,
     embedding: list[float],
-    k: int = EPISODE_LIKE_LIMIT,
-    distance_max: float = EPISODE_DISTANCE_MAX,
+    k: int = EPISODE_PULL_K,
+    distance_max: float = EPISODE_HARD_DISTANCE_MAX,
 ) -> list[tuple[int, str, str, str, float]]:
     """1 keyword embedding で episodes をベクトル検索.
 
@@ -233,14 +242,18 @@ def _search_episodes_one(
 def search_episodes_by_embeddings(
     conn: sqlite3.Connection,
     embeddings: list[list[float]],
-    final_limit: int = EPISODE_LIKE_LIMIT,
-    distance_max: float = EPISODE_DISTANCE_MAX,
+    target_hits: int = EPISODE_TARGET_HITS,
+    hard_distance_max: float = EPISODE_HARD_DISTANCE_MAX,
+    pull_k: int = EPISODE_PULL_K,
 ) -> list[RecalledEpisode]:
-    """複数キーワード embedding で episodes を vec0 検索 → 重複除去 → 距離順.
+    """複数キーワード embedding で episodes を vec0 検索 (adaptive).
 
-    - 各 embedding ごとに _search_episodes_one
-    - (content, role) で dedup、最小距離を採用
-    - 距離順 top final_limit
+    アルゴリズム:
+    1. 各 embedding につき pull_k 件を hard_distance_max 内で取得
+    2. (content, role) で dedup、最小距離を採用
+    3. 距離昇順で並べ、top target_hits だけ採用
+       → DB が rich なら top target_hits 番目の距離が自然と厳しくなる (= 動的閾値)
+       → DB が sparse なら hard_distance_max 内の全件、無理に広げない
     """
     if not embeddings:
         return []
@@ -248,14 +261,14 @@ def search_episodes_by_embeddings(
     for emb in embeddings:
         if not emb:
             continue
-        for hit in _search_episodes_one(conn, emb, distance_max=distance_max):
+        for hit in _search_episodes_one(conn, emb, k=pull_k, distance_max=hard_distance_max):
             key = (hit[1], hit[2])  # (role, content)
             cur = seen.get(key)
             if cur is None or hit[4] < cur[4]:
                 seen[key] = hit
     ranked = sorted(seen.values(), key=lambda h: h[4])
     out: list[RecalledEpisode] = []
-    for r in ranked[:final_limit]:
+    for r in ranked[:target_hits]:
         content = r[2] or ""
         if EPISODE_CONTENT_PREVIEW > 0 and len(content) > EPISODE_CONTENT_PREVIEW:
             content = content[:EPISODE_CONTENT_PREVIEW] + "…"
