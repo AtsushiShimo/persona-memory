@@ -90,3 +90,36 @@ def test_build_summarize_prompt_includes_user_content_and_hits():
 def test_build_summarize_prompt_handles_empty_inputs():
     prompt = build_summarize_prompt("X", [], [])
     assert "(なし)" in prompt
+
+
+def test_build_summarize_prompt_includes_retracted_value():
+    """retracted_value 付き fact は『過去には〜と言っていたが撤回済』 が prompt に入る."""
+    fact = RecalledFact(
+        fact_id=1, category="preference", key="coffee",
+        value="浅煎り派", importance=7, access_count=0,
+        distance=0.1, score=0.5,
+        retracted_value="深煎り派",
+    )
+    prompt = build_summarize_prompt("コーヒー?", [fact], [])
+    assert "浅煎り派" in prompt
+    assert "深煎り派" in prompt
+    assert "撤回済" in prompt
+
+
+def test_build_summarize_prompt_no_retracted_when_none():
+    """retracted_value=None なら fact ブロックに value 付き撤回行は出ない.
+
+    指示文には「撤回済」 という語が入っているので, fact 個別の補足行
+    (= `(※ 過去には『...』 と言っていたが撤回済)`) が来ないことを確認する.
+    """
+    fact = RecalledFact(
+        fact_id=1, category="preference", key="coffee",
+        value="深煎り派", importance=7, access_count=0,
+        distance=0.1, score=0.5,
+    )
+    prompt = build_summarize_prompt("コーヒー?", [fact], [])
+    # fact ブロック (= 指示文より下、ヒットした記憶 fact: 以下) に value 付き
+    # 撤回行が無いこと
+    facts_section = prompt.split("[ヒットした記憶 fact]")[1].split("[ヒットした会話ログ]")[0]
+    assert "過去には" not in facts_section
+    assert "(※" not in facts_section

@@ -19,7 +19,12 @@ EMPTY_MARKER = "(該当なし)"
 
 
 def _format_fact(f: RecalledFact) -> str:
-    return f"- [{f.category}/{f.key}] {f.value} (importance={f.importance})"
+    base = f"- [{f.category}/{f.key}] {f.value} (importance={f.importance})"
+    if f.retracted_value:
+        # lint で矛盾と判定され撤回された旧 value. summarize LLM が「以前は X
+        # と言っていたが撤回済み」 形式で main agent に伝える.
+        base += f"\n    (※ 過去には『{f.retracted_value}』 と言っていたが撤回済)"
+    return base
 
 
 def _format_episode(e: RecalledEpisode) -> str:
@@ -51,6 +56,9 @@ def build_summarize_prompt(
   例: 問い「実装優先度どうだったっけ?」 → Phase 分け / 優先順位を述べた fact や log
   例: 問い「ペット飼ってたよね?」 → ペット名 / 種類 / 性別を述べた fact や log
 - 関連が薄くても問いの主題と関係する補足情報は残してよい (importance 表示は捨てて自然文で)
+- **撤回済の旧値 (※過去には『…』 と言っていたが撤回済) があれば、最新値の直後に**
+  **必ず 1 行補足する** (= 過去の言質と最新の正解を両方残す)。例:
+    - コーヒーは浅煎り派。 (過去には『深煎り派』 と言っていたが撤回済)
 - ファイル名・パス・テーブル名・コマンド名・embedding 偶然マッチは捨てる
 - ヒット数が多くても、問いに関連する 3-7 件に絞る
 - 残ったものを markdown 箇条書きで列挙 (`- <内容>`)

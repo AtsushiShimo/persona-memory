@@ -264,3 +264,57 @@ def test_run_records_lint_log(db_path, monkeypatch):
 def test_thresholds_have_expected_default_values():
     assert AUTO_RESOLVE_THRESHOLD == 90
     assert FLAG_THRESHOLD == 60
+
+
+def test_recall_search_attaches_retracted_value_for_lint_conflict(db_path):
+    """lint_conflict で supersede された旧 value が active fact の retracted_value
+    に乗ること (= recall で「両方提示+正解添え」 を main に流す経路)."""
+    from scripts.recall.search import search
+
+    conn = connect(db_path)
+    try:
+        # 同じ vec で 2 fact を seed: 古い側 (a) が後で superseded になる
+        a, b = _seed_two_facts(conn, "深煎り派", "浅煎りが好き")
+        client = FakeJudgeClient(
+            judgments={("深煎り派", "浅煎りが好き"): (True, 95)},
+        )
+        # b 側起点で lint → a が superseded + source='lint_conflict'
+        result = lint_around_fact(conn, b, client)
+        assert result["auto_resolved"] == 1
+
+        # recall search: query embedding は default ([1,0,...])。fact b と一致.
+        hits = search(conn, [[1.0] + [0.0] * 767])
+        assert len(hits) == 1
+        h = hits[0]
+        assert h.fact_id == b
+        assert h.value == "浅煎りが好き"
+        assert h.retracted_value == "深煎り派"  # ← lint で撤回された旧 value
+    finally:
+        conn.close()
+
+
+def test_recall_search_no_retracted_for_normal_supersede(db_path):
+    """通常の write supersede (source='conversation') では retracted_value=None."""
+    from scripts.recall.search import search
+    from scripts.write.persist import supersede
+    from scripts.write.similarity import Match
+
+    conn = connect(db_path)
+    try:
+        a, b = _seed_two_facts(conn, "古い", "新しい")
+        # 通常の supersede (lint ではなく write 経路)
+        supersede(
+            conn,
+            Match(fact_id=a, category="preference", key="a",
+                  value="古い", importance=7, method="key"),
+            FactCandidate("preference", "a", "新しい更新", 7),
+            embedding=[1.0] + [0.0] * 767,
+            source="conversation",
+        )
+        conn.commit()
+        hits = search(conn, [[1.0] + [0.0] * 767])
+        # 通常 supersede 由来の active fact には retracted_value 付かない
+        active_hits = [h for h in hits if h.retracted_value is not None]
+        assert active_hits == []
+    finally:
+        conn.close()

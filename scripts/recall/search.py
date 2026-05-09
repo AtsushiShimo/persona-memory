@@ -38,6 +38,11 @@ class RecalledFact:
     access_count: int
     distance: float
     score: float
+    # lint で auto_resolve された場合、撤回済の旧 value をここに添える.
+    # 「以前は X と言っていたが撤回済み」 という補足を summarize LLM に渡し,
+    # main エージェントの context に「両方提示+正解添え」 で流す.
+    # source='lint_conflict' の supersede 時のみセットされる. None なら無し.
+    retracted_value: str | None = None
 
 
 def _parse_jst(s: str) -> datetime | None:
@@ -79,6 +84,9 @@ def _search_one(
     additionalContext に prepend する仕組み (§8.1).
     """
     blob = pack(embedding)
+    # supersedes が lint_conflict 由来なら旧 value を retracted_value として
+    # 添える (両方提示+正解添え 設計). conversation 由来の通常 supersede は
+    # ユーザーが日常的に書き換えてるだけなので補足不要 (= NULL).
     rows = conn.execute(
         """
         WITH knn AS (
@@ -87,9 +95,13 @@ def _search_one(
           WHERE embedding MATCH ? AND k = ?
         )
         SELECT f.id, f.category, f.key, f.value, f.importance, f.access_count,
-               COALESCE(f.last_accessed_at, f.updated_at) AS ts, knn.distance
+               COALESCE(f.last_accessed_at, f.updated_at) AS ts, knn.distance,
+               old.value AS retracted_value
         FROM knn
         JOIN facts f ON f.id = knn.fact_id
+        LEFT JOIN facts old
+          ON old.id = f.supersedes
+          AND old.source = 'lint_conflict'
         WHERE f.status = 'active'
           AND f.category NOT IN ('persona', 'rule')
         ORDER BY knn.distance
@@ -100,7 +112,7 @@ def _search_one(
     now = datetime.now(JST)
     out: list[RecalledFact] = []
     for r in rows:
-        fid, cat, key, val, imp, acc, ts, dist = r
+        fid, cat, key, val, imp, acc, ts, dist, retracted = r
         if dist > distance_max:
             continue
         ts_dt = _parse_jst(ts)
@@ -112,6 +124,7 @@ def _search_one(
             fact_id=fid, category=cat, key=key, value=val,
             importance=imp, access_count=acc, distance=dist,
             score=_score(dist, age_days, imp, acc),
+            retracted_value=retracted,
         ))
     return out
 
