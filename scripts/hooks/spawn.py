@@ -33,3 +33,33 @@ def spawn_write(episode_ids: list[int]) -> None:
     except Exception:
         # fail-open: 子プロセス起動失敗でも本処理 (raw 保存) は完了済み
         pass
+
+
+def spawn_lint(fact_ids: list[int], trigger: str = "write_tail") -> None:
+    """write LLM 完了後の tail として lint を detach 起動.
+
+    fact_ids: 直前 write で active 化された / 触られた fact の id 群.
+    その近傍に対して judge_conflict を走らせ, auto_resolve / flag する.
+    PERSONA_LINT_DISABLE=1 で無効化 (テスト時用).
+    """
+    if os.environ.get("PERSONA_LINT_DISABLE") == "1":
+        return
+    if not fact_ids:
+        return
+
+    payload = json.dumps({"fact_ids": fact_ids, "trigger": trigger}).encode()
+    try:
+        p = subprocess.Popen(
+            [sys.executable, "-m", "scripts.lint.run"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+        if p.stdin:
+            p.stdin.write(payload)
+            p.stdin.close()
+    except Exception:
+        # fail-open: lint 失敗でも write 結果は確定済み
+        pass

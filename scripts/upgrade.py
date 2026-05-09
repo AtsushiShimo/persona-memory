@@ -118,16 +118,62 @@ def _refresh_fact_embeddings(conn, client) -> int:
     return n
 
 
+def _ensure_lint_tables(conn) -> bool:
+    """v0.5.12 追加の conflicts / lint_log を既存 DB に migrate.
+
+    schema.sql は CREATE TABLE IF NOT EXISTS なので idempotent.
+    戻り値: いずれか新規 create された場合 True.
+    """
+    schema_file = Path(__file__).resolve().parent / "db" / "schema.sql"
+    text = schema_file.read_text(encoding="utf-8")
+    # 該当 statement だけ抜き出して実行 (全 schema 流すと既存テーブル定義の差分
+    # が出る可能性があるため, 新規テーブル分のみ idempotent に投げる).
+    snippets = []
+    capture = False
+    buf: list[str] = []
+    for stmt in text.split(";"):
+        s = stmt.strip()
+        if not s:
+            continue
+        target = (
+            "conflicts" in s and "CREATE TABLE" in s
+        ) or (
+            "lint_log" in s and "CREATE TABLE" in s
+        ) or (
+            "idx_conflicts_" in s and "CREATE INDEX" in s
+        ) or (
+            "idx_lint_log_" in s and "CREATE INDEX" in s
+        )
+        if target:
+            snippets.append(s + ";")
+    before = conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master "
+        "WHERE type='table' AND name IN ('conflicts','lint_log')"
+    ).fetchone()[0]
+    for s in snippets:
+        conn.execute(s)
+    conn.commit()
+    after = conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master "
+        "WHERE type='table' AND name IN ('conflicts','lint_log')"
+    ).fetchone()[0]
+    return after > before
+
+
 def upgrade(db_path: Path) -> dict[str, int]:
     """戻り値: 各操作のカウント."""
     counts = {
         "inserted": 0, "updated": 0, "unchanged": 0,
         "deprecated": 0, "episodes_embedded": 0,
         "facts_re_embedded": 0, "superseded_purged": 0,
+        "lint_tables_added": 0,
     }
     conn = connect(db_path)
     client = OllamaClient()
     try:
+        if _ensure_lint_tables(conn):
+            counts["lint_tables_added"] = 1
+            print("  added lint tables (conflicts, lint_log)")
         # 1. 廃止された default を active → superseded に降格
         for category, key in DEPRECATED_BOOT_FACTS:
             row = conn.execute(
@@ -262,7 +308,8 @@ def main() -> None:
         f"deprecated={counts['deprecated']}, "
         f"episodes_embedded={counts['episodes_embedded']}, "
         f"superseded_purged={counts['superseded_purged']}, "
-        f"facts_re_embedded={counts['facts_re_embedded']}"
+        f"facts_re_embedded={counts['facts_re_embedded']}, "
+        f"lint_tables_added={counts['lint_tables_added']}"
     )
 
 

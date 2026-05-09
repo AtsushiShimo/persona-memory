@@ -51,6 +51,37 @@ CREATE TABLE IF NOT EXISTS escalation_log (
 
 CREATE INDEX IF NOT EXISTS idx_escalation_timestamp ON escalation_log(timestamp);
 
+-- lint LLM (judge_conflict) 検出結果。
+-- resolution:
+--   'auto_superseded' = confidence >= 90、古い方を facts.status='superseded' に降格 + source='lint_conflict'
+--   'flagged'         = confidence 60-89、両方 active のまま記録のみ (recall に影響なし)
+-- recall 側は本テーブルを直接見ない。supersede された fact の source 列で
+-- 「conflict 由来か」 を判別 → active な側を引いた時に旧版を補足表示する。
+CREATE TABLE IF NOT EXISTS conflicts (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  fact_a_id    INTEGER NOT NULL REFERENCES facts(id),
+  fact_b_id    INTEGER NOT NULL REFERENCES facts(id),
+  confidence   INTEGER NOT NULL CHECK (confidence BETWEEN 0 AND 100),
+  resolution   TEXT NOT NULL CHECK (resolution IN ('auto_superseded','flagged')),
+  detected_at  TEXT NOT NULL DEFAULT (datetime('now', '+9 hours'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_conflicts_fact_a ON conflicts(fact_a_id);
+CREATE INDEX IF NOT EXISTS idx_conflicts_fact_b ON conflicts(fact_b_id);
+
+-- lint LLM 1 回の実行サマリ。健康診断 (/persona-memory:health) で「最近 lint
+-- 回ったか」 「auto_resolve / flag の件数」 を見るために使う。
+CREATE TABLE IF NOT EXISTS lint_log (
+  id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_at                   TEXT NOT NULL DEFAULT (datetime('now', '+9 hours')),
+  pairs_examined           INTEGER NOT NULL DEFAULT 0,
+  conflicts_flagged        INTEGER NOT NULL DEFAULT 0,
+  conflicts_auto_resolved  INTEGER NOT NULL DEFAULT 0,
+  trigger_kind             TEXT NOT NULL CHECK (trigger_kind IN ('write_tail','session_end','manual'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_lint_log_run_at ON lint_log(run_at);
+
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL

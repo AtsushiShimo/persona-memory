@@ -200,6 +200,7 @@ def run(episode_ids: Iterable[int], buffer_n: int = DEFAULT_BUFFER_N, client: LL
     if db_path is None:
         return 0
     cli = client or OllamaClient()
+    touched_fact_ids: list[int] = []
     # episode 単位で conn を開閉する。process_episode 内では LLM 呼び出し
     # (10-30s) を含むため、長時間 1 つの conn を保持すると Stop hook 等の
     # 並行 writer (assistant 発話の save_episode) が DB lock で落ちる。
@@ -208,13 +209,32 @@ def run(episode_ids: Iterable[int], buffer_n: int = DEFAULT_BUFFER_N, client: LL
     for eid in episode_ids:
         conn = connect(db_path)
         try:
-            process_episode(conn, eid, buffer_n, cli)
+            results = process_episode(conn, eid, buffer_n, cli)
+            # insert / supersede された fact の id を拾って後で lint tail に渡す.
+            # reinforce / protected は内容が大きく動かないため lint 対象外.
+            for cand, action in results:
+                if action not in ("insert", "supersede"):
+                    continue
+                row = conn.execute(
+                    "SELECT id FROM facts WHERE category=? AND key=? AND status='active'",
+                    (cand.category, cand.key),
+                ).fetchone()
+                if row:
+                    touched_fact_ids.append(row[0])
             mark_processed(conn, eid)
         except Exception as e:
             sys.stderr.write(f"[persona-memory] write process_episode {eid} failed: {e}\n")
             continue
         finally:
             conn.close()
+    # write 完了後 lint を tail spawn (= 新 fact の近傍に対して矛盾 judge).
+    # detached child なので write run はここで即座に return できる.
+    if touched_fact_ids:
+        try:
+            from scripts.hooks.spawn import spawn_lint
+            spawn_lint(touched_fact_ids, trigger="write_tail")
+        except Exception as e:
+            sys.stderr.write(f"[persona-memory] spawn_lint failed: {e}\n")
     return 0
 
 
