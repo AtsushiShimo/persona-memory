@@ -218,6 +218,36 @@ def test_recall_empty_when_summary_says_no_match(db):
     assert recall(db, "深煎り好き?", client) == ""
 
 
+def test_recall_includes_playbook_persona_facts(db):
+    """persona/playbook_* は SessionStart 除外だが dynamic recall では hit する.
+
+    `category NOT IN ('persona','rule')` の従来除外を override して
+    `OR key LIKE 'playbook_%'` を許可する (= 0.5.19 で追加).
+    """
+    from scripts.recall.search import search
+
+    insert_new(
+        db,
+        FactCandidate(
+            "persona", "playbook_external_tool_failure",
+            "トリガー: Stitch / Figma の接続失敗 / 行動: 不具合検索",
+            8,
+        ),
+        [1.0] + [0.0] * 767,
+    )
+    # 普通の persona (= boot 層) は recall 除外されることを確認するため一緒に入れる
+    insert_new(
+        db, FactCandidate("persona", "style", "率直に", 9),
+        [1.0] + [0.0] * 767,
+    )
+    db.commit()
+
+    hits = search(db, [[1.0] + [0.0] * 767])
+    keys = [h.key for h in hits]
+    assert "playbook_external_tool_failure" in keys
+    assert "style" not in keys  # 通常の persona は除外
+
+
 def test_recall_runs_even_when_keywords_empty(db):
     """keywords=[] (= 短い相槌・合意) でも recall は走る。
 

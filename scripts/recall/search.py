@@ -87,6 +87,10 @@ def _search_one(
     # supersedes が lint_conflict 由来なら旧 value を retracted_value として
     # 添える (両方提示+正解添え 設計). conversation 由来の通常 supersede は
     # ユーザーが日常的に書き換えてるだけなので補足不要 (= NULL).
+    #
+    # boot 層 (persona/rule) は SessionStart 全件注入なので recall では除外する.
+    # ただし persona/playbook_* (= 状況依存ノウハウ) は SessionStart 注入から
+    # 外して dynamic recall でのみ hit させる設計のため、 ここでは含める.
     rows = conn.execute(
         """
         WITH knn AS (
@@ -103,7 +107,10 @@ def _search_one(
           ON old.id = f.supersedes
           AND old.source = 'lint_conflict'
         WHERE f.status = 'active'
-          AND f.category NOT IN ('persona', 'rule')
+          AND (
+            f.category NOT IN ('persona', 'rule')
+            OR f.key LIKE 'playbook_%'
+          )
         ORDER BY knn.distance
         """,
         (blob, k),

@@ -17,11 +17,20 @@ CONDENSE_TOKENS_THRESHOLD = 5000
 
 
 def fetch_boot_facts(conn: sqlite3.Connection) -> list[dict]:
+    """SessionStart 注入対象の boot 層 facts.
+
+    `key` が `playbook_` prefix のものは **除外** する.
+    playbook (= 状況依存ノウハウ) は category=persona に保存されるが、
+    常時 context に乗せると肥大化するため、 dynamic recall で発話関連時のみ
+    main agent に注入する設計 (= ベクター検索で「stitch 動かない」 ↔
+    「外部ツール接続失敗時の対応」 が hit する想定).
+    """
     rows = conn.execute(
         """
         SELECT category, key, value, importance
         FROM facts
         WHERE category IN ('persona','rule') AND status='active'
+          AND key NOT LIKE 'playbook_%'
         ORDER BY importance DESC, id ASC
         """,
     ).fetchall()

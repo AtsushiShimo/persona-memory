@@ -56,6 +56,25 @@ def test_fetch_boot_facts_excludes_superseded(db):
     assert fetch_boot_facts(db) == []
 
 
+def test_fetch_boot_facts_excludes_playbook_keys(db):
+    """persona/playbook_* は SessionStart 注入対象外 (= dynamic recall でのみ
+    引かれる. 0.5.19 で追加された状況依存ノウハウ専用扱い)."""
+    insert_new(db, FactCandidate("persona", "style", "率直に", 9), [0.0] * 768)
+    insert_new(db, FactCandidate(
+        "persona", "playbook_external_tool_failure",
+        "トリガー: Stitch / Figma 等の接続失敗 / 行動: 不具合検索する",
+        8,
+    ), [0.0] * 768)
+    insert_new(db, FactCandidate("rule", "no_force", "force push 禁止", 9), [0.0] * 768)
+    db.commit()
+
+    facts = fetch_boot_facts(db)
+    keys = [f["key"] for f in facts]
+    assert "style" in keys
+    assert "no_force" in keys
+    assert "playbook_external_tool_failure" not in keys
+
+
 def test_format_boot_facts_includes_marker():
     facts = [
         {"category": "persona", "key": "style", "value": "率直に", "importance": 9},
