@@ -32,8 +32,11 @@ JUDGE_MODEL = os.environ.get(
 )
 EMBED_MODEL = os.environ.get("PERSONA_EMBED_MODEL", "nomic-embed-text")
 NEIGHBOR_TOP_K = int(os.environ.get("PERSONA_LINT_NEIGHBOR_TOP_K", "5"))
+# 0.5 では過剰検出 (異 category / 別属性同士でも heavy LLM が「矛盾」 と
+# 高 confidence で誤判定するケース多発). 0.4 に絞り、かつ _fetch_neighbors で
+# 同 category 制限を加えた (異 category 間で矛盾はあり得ない設計判断).
 NEIGHBOR_DISTANCE_MAX = float(
-    os.environ.get("PERSONA_LINT_DISTANCE_MAX", "0.5")
+    os.environ.get("PERSONA_LINT_DISTANCE_MAX", "0.4")
 )
 AUTO_RESOLVE_THRESHOLD = int(
     os.environ.get("PERSONA_LINT_AUTO_RESOLVE", "90")
@@ -42,26 +45,40 @@ FLAG_THRESHOLD = int(os.environ.get("PERSONA_LINT_FLAG", "60"))
 
 
 _PROMPT = """\
-2 つの記憶が論理的に矛盾しているか判定する。
+2 つの記憶が **同じ事柄について論理的に矛盾している** か判定する。
 
 記憶 A: {a}
 記憶 B: {b}
 
-判定基準:
-- 同じ事柄について **互いに両立しない事実** を述べているか?
-  (例: 『コーヒーは深煎り派』 vs 『コーヒーは浅煎りが好き』 = 矛盾)
-- 異なる側面・補足・追記は矛盾ではない
-  (例: 『コーヒーは深煎り』 vs 『砂糖は入れない』 = 別々の事実、両立)
-- 抽象度の違う言い換えも矛盾ではない
-  (例: 『犬が好き』 vs 『チワワを飼ってる』 = 両立)
+## 判定基準 (厳格)
 
-confidence の目安:
-  90-100 = ほぼ確実に矛盾
-  60-89  = 矛盾の可能性高いが不確かさあり
-  30-59  = 微妙、決め手に欠く
-  0-29   = 矛盾していない
+**矛盾と判定する条件 (両方を満たす時のみ)**:
+1. 同じ対象 / 同じ属性について述べている (例: 同一人物の同一の好み、
+   同じ物の同じ性質、同じ事実の同じ側面)
+2. その属性について **両立しない値** が示されている
 
-JSON のみ出力 (説明・前置き・コードフェンス禁止):
+**矛盾と判定してはいけないパターン**:
+- 異なる属性 / 異なる側面: 「コーヒーは深煎り」 と「砂糖なし」 は別属性 → 両立
+- 異なる対象: 「犬が好き」 と「猫が嫌い」 は別対象 → 両立
+- 抽象度の差: 「犬を飼ってる」 と「チワワを飼ってる」 → 包含関係 = 両立
+- 補足・追記: 「コーヒーは深煎り」 と「コーヒーはブラックで飲む」 → 両立
+- 時系列での自然な変化: 一般情報の更新は矛盾ではなく単なる更新
+
+**矛盾の典型例 (= true 判定)**:
+- 「コーヒーは深煎り派」 vs 「コーヒーは浅煎りが好き」 (同属性で対立)
+- 「猫を飼ってる」 vs 「ペットはいない」 (同事実で対立)
+- 「主に Python を書く」 vs 「Python は書かない」 (同行動で対立)
+
+## confidence の目安
+
+- 90-100 = 同事柄について明確に対立する値が両方にあり、不一致が動かしようがない
+- 60-89  = 対立しているが、表現が曖昧で別解釈の余地がある
+- 30-59  = どちらかの属性が違う / 同事柄か疑わしい
+- 0-29   = 同事柄ではない / 両立可能 / 補足関係
+
+## 出力
+
+JSON のみ (説明・前置き・コードフェンス禁止):
 {{"contradict": true|false, "confidence": 0-100}}
 """
 
@@ -116,10 +133,16 @@ def _fetch_fact(conn: sqlite3.Connection, fact_id: int) -> dict | None:
 
 
 def _fetch_neighbors(
-    conn: sqlite3.Connection, fact_id: int,
+    conn: sqlite3.Connection, fact_id: int, category: str,
     embedding: list[float], top_k: int, distance_max: float,
 ) -> list[dict]:
-    """active fact のうち、対象 fact 自身を除く近傍 top_k 件を取得."""
+    """active fact のうち、起点 fact と **同じ category** で自身を除く近傍 top_k 件.
+
+    異 category 間 (例: profile/pet vs preference/coffee) で「矛盾」 は論理的に
+    あり得ないため candidate から除外する. 0.5.16 でこの制限を追加した経緯:
+    異 category fact を judge LLM が高 confidence で「矛盾」 と誤判定し,
+    無関係な fact を auto_supersede で次々と消滅させる暴走が観測された.
+    """
     blob = pack(embedding)
     rows = conn.execute(
         """
@@ -131,10 +154,12 @@ def _fetch_neighbors(
         SELECT f.id, f.category, f.key, f.value, knn.distance
         FROM knn
         JOIN facts f ON f.id = knn.fact_id
-        WHERE f.status = 'active' AND knn.fact_id != ?
+        WHERE f.status = 'active'
+          AND f.category = ?
+          AND knn.fact_id != ?
         ORDER BY knn.distance
         """,
-        (blob, top_k + 1, fact_id),  # +1 で自身分を吸収
+        (blob, top_k + 5, category, fact_id),  # +5 で同 cat 候補を確保
     ).fetchall()
     return [
         {"id": r[0], "category": r[1], "key": r[2], "value": r[3], "distance": r[4]}
@@ -214,7 +239,8 @@ def lint_around_fact(
     if not vec:
         return out
     neighbors = _fetch_neighbors(
-        conn, fact_id, vec, NEIGHBOR_TOP_K, NEIGHBOR_DISTANCE_MAX,
+        conn, fact_id, fact["category"], vec,
+        NEIGHBOR_TOP_K, NEIGHBOR_DISTANCE_MAX,
     )
     for n in neighbors:
         pair = tuple(sorted((fact_id, n["id"])))

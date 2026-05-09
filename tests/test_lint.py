@@ -266,6 +266,37 @@ def test_thresholds_have_expected_default_values():
     assert FLAG_THRESHOLD == 60
 
 
+def test_lint_skips_facts_in_different_category(db_path):
+    """異 category fact (例: profile vs preference) は近傍として
+    取り出されないので judge 対象外 (= 0.5.16 で追加した暴走防止)."""
+    conn = connect(db_path)
+    try:
+        # 同 vec で 2 fact を seed するが category が違う
+        vec = [1.0] + [0.0] * 767
+        a = insert_new(conn, FactCandidate("preference", "coffee", "深煎り", 7), vec)
+        b = insert_new(conn, FactCandidate("profile", "pet_name", "まろん", 7), vec)
+        conn.commit()
+        # judge は呼ばれてはいけない (= contradict と判定されても無視される
+        # 設計だが、そもそも _fetch_neighbors で除外されている)
+        client = FakeJudgeClient(
+            judgments={
+                ("深煎り", "まろん"): (True, 95),  # 仮に矛盾と判定しても
+                ("まろん", "深煎り"): (True, 95),
+            },
+        )
+        result = lint_around_fact(conn, a, client)
+        # 同 cat に他 fact が無いので pairs_examined=0
+        assert result["pairs_examined"] == 0
+        assert result["auto_resolved"] == 0
+        # 両方 active のまま
+        statuses = [r[0] for r in conn.execute(
+            "SELECT status FROM facts WHERE id IN (?,?) ORDER BY id", (a, b),
+        ).fetchall()]
+        assert statuses == ["active", "active"]
+    finally:
+        conn.close()
+
+
 def test_recall_search_attaches_retracted_value_for_lint_conflict(db_path):
     """lint_conflict で supersede された旧 value が active fact の retracted_value
     に乗ること (= recall で「両方提示+正解添え」 を main に流す経路)."""
