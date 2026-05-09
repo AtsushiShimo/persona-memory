@@ -104,6 +104,60 @@ def test_extract_facts_with_fake_client():
     assert r[0].key == "coffee"
 
 
+def test_extract_facts_via_claude_backend(monkeypatch):
+    """backend='claude' で _extract_via_claude_backend (= invoke_claude) が
+    呼ばれ、ollama client.generate は呼ばれないこと.
+    """
+    import json as _json
+    from dataclasses import dataclass
+
+    @dataclass
+    class _Result:
+        text: str
+        success: bool
+        error: str = ""
+
+    fake_response = _json.dumps([
+        {"category": "preference", "key": "coffee", "value": "浅煎り", "importance": 6}
+    ], ensure_ascii=False)
+
+    calls = {"invoke_claude": 0, "ollama_generate": 0}
+
+    def fake_invoke(prompt, timeout=120):
+        calls["invoke_claude"] += 1
+        return _Result(text=fake_response, success=True)
+
+    monkeypatch.setattr(
+        "scripts.escalate.claude_p.invoke_claude", fake_invoke,
+    )
+
+    class _GuardedClient:
+        def generate(self, model, prompt):
+            calls["ollama_generate"] += 1
+            return "[]"
+        def embed(self, model, text):
+            return [1.0] + [0.0] * 767
+
+    r = extract_facts(
+        role="user", content="浅煎り好き", buffer=[],
+        client=_GuardedClient(), backend="claude",
+    )
+    assert calls["invoke_claude"] == 1
+    assert calls["ollama_generate"] == 0
+    assert len(r) == 1
+    assert r[0].value == "浅煎り"
+
+
+def test_extract_facts_default_backend_is_ollama():
+    """backend 指定なし (default) は ollama (= client.generate) を使う."""
+    client = FakeClient(facts=[
+        {"category": "preference", "key": "coffee", "value": "深煎り", "importance": 6}
+    ])
+    r = extract_facts(role="user", content="x", buffer=[], client=client)
+    # FakeClient.generate が呼ばれて facts が返ってきていること
+    assert len(r) == 1
+
+
 # ── similarity / persist ─────────────────────────────────────────────────────
 
 @pytest.fixture

@@ -14,9 +14,18 @@ from dataclasses import dataclass
 
 from scripts.shared.ollama import LLMClient
 
+# write の default backend / model.
+# 0.5.13 で default を heavy (gemma3:12b) に上げた。light (gemma3:4b) では
+# fact extraction の精度 (key/value 整合 / 既存値の上書き判定 / 矛盾検知) が
+# 不足する事例が積み重なったため。env で従来動作 (light) や Claude 切り替え
+# 可能 (= モデル性能 vs プロンプト/DB 設計 の切り分け診断用):
+#   PERSONA_WRITE_BACKEND=ollama  (default)
+#   PERSONA_WRITE_BACKEND=claude  (`claude -p` 子プロセスに丸投げ)
+#   PERSONA_WRITE_MODEL=<model>   (ollama backend のみ。default gemma3:12b)
+WRITE_BACKEND = os.environ.get("PERSONA_WRITE_BACKEND", "ollama").strip().lower()
 WRITE_MODEL = os.environ.get(
     "PERSONA_WRITE_MODEL",
-    os.environ.get("PERSONA_LIGHT_MODEL", "gemma3:4b"),
+    os.environ.get("PERSONA_HEAVY_MODEL", "gemma3:12b"),
 )
 
 VALID_CATEGORIES = (
@@ -158,16 +167,38 @@ def parse_response(text: str) -> list[FactCandidate]:
     return out
 
 
+def _extract_via_claude_backend(prompt: str) -> str:
+    """`claude -p` を子プロセスとして呼び出し、出力テキストを返す.
+
+    PERSONA_WRITE_BACKEND=claude の時に使う. ollama backend と同じ JSON 配列
+    形式の出力を期待する (parse_response が共通で受け止める).
+    """
+    # 循環 import 回避のため関数内 import
+    from scripts.escalate.claude_p import invoke_claude
+    r = invoke_claude(prompt)
+    return r.text if r.success else ""
+
+
 def extract_facts(
     role: str,
     content: str,
     buffer: list[dict],
     client: LLMClient,
     model: str = WRITE_MODEL,
+    backend: str = WRITE_BACKEND,
 ) -> list[FactCandidate]:
+    """write LLM で fact 候補を抽出.
+
+    backend:
+      'ollama' (default) — client.generate(model, prompt) で Ollama に投げる
+      'claude'           — `claude -p prompt` 子プロセスに丸投げ (診断用)
+    """
     prompt = build_prompt(role, content, buffer)
     try:
-        response = client.generate(model, prompt)
+        if backend == "claude":
+            response = _extract_via_claude_backend(prompt)
+        else:
+            response = client.generate(model, prompt)
     except Exception:
         return []
     return parse_response(response)
