@@ -176,6 +176,22 @@ def test_is_same_attribute_treats_last_word_as_attribute():
     assert _is_same_attribute("foo_NAME", "bar_name")
 
 
+def test_is_same_attribute_strips_dup_suffix():
+    """seen_keys 由来の `_2`/`_3` suffix を剥がしてから末尾比較する (0.5.18)."""
+    from scripts.write.similarity import _is_same_attribute, _strip_dup_suffix
+
+    # suffix 剥がし
+    assert _strip_dup_suffix("coffee_milk_2") == "coffee_milk"
+    assert _strip_dup_suffix("coffee_milk_42") == "coffee_milk"
+    assert _strip_dup_suffix("coffee_milk") == "coffee_milk"  # 変更なし
+
+    # suffix 違いでも同属性扱い
+    assert _is_same_attribute("coffee_milk", "coffee_milk_2")
+    assert _is_same_attribute("coffee_milk_2", "coffee_milk_3")
+    # 異属性は依然別物
+    assert not _is_same_attribute("coffee_milk_2", "coffee_roast")
+
+
 # ── similarity / persist ─────────────────────────────────────────────────────
 
 @pytest.fixture

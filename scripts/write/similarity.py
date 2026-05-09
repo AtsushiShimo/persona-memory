@@ -86,6 +86,16 @@ def find_by_embedding(
     )
 
 
+def _strip_dup_suffix(key: str) -> str:
+    """seen_keys セーフティネットが付けた数字 suffix (_2, _3, ...) を剥がす.
+
+    write/run.py の seen_keys 機構で同 batch 内 key 重複時に `_<n>` を付ける
+    ため, `coffee_milk_2` と `coffee_milk` の末尾比較で別属性と誤判定するのを防ぐ.
+    """
+    import re
+    return re.sub(r"_\d+$", "", key)
+
+
 def _is_same_attribute(key_a: str, key_b: str) -> bool:
     """2 つの key が同じ属性 (= attribute) を表しているかを **末尾の単語** で判定.
 
@@ -94,11 +104,11 @@ def _is_same_attribute(key_a: str, key_b: str) -> bool:
     embedding 近傍で同一視するため. 一方で `pet_dog_name` vs `pet_dog_breed`
     のような明確に別属性 ('name' vs 'breed') は別物として扱う.
 
-    ヒューリスティックなので完璧ではないが、 異属性誤マッチによる連続 supersede
-    (= 「まろん→ミニチュアダックス→オス」 全部 pet_dog_name で上書き) を防ぐ目的.
+    seen_keys セーフティネットの数字 suffix (`coffee_milk_2`) は剥がしてから
+    比較する (= `coffee_milk` と同属性扱い).
     """
-    a = key_a.split("_")[-1].lower()
-    b = key_b.split("_")[-1].lower()
+    a = _strip_dup_suffix(key_a).split("_")[-1].lower()
+    b = _strip_dup_suffix(key_b).split("_")[-1].lower()
     return a == b
 
 
