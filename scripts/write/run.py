@@ -165,6 +165,26 @@ def process_episode(
     if not candidates:
         return []
 
+    # write LLM が指示違反で同じ (category, key) で複数 candidate を出した時の
+    # セーフティネット: 2 件目以降に `_2`, `_3` の suffix を付けて情報損失を防ぐ.
+    # apply_candidate 側で互いに supersede し合って 1 件しか残らない事象 (例:
+    # 「まろん、ミニチュアダックスフンド、オス」 を全部 pet_dog_name で出して
+    # 最後の「オス」 だけ active になる) を回避する. prompt で禁止しているが
+    # heavy LLM でも守れない事例があるため運用側で保険をかける.
+    seen_keys: dict[tuple[str, str], int] = {}
+    for cand in candidates:
+        kid = (cand.category, cand.key)
+        cnt = seen_keys.get(kid, 0)
+        seen_keys[kid] = cnt + 1
+        if cnt > 0:
+            new_key = f"{cand.key}_{cnt + 1}"
+            sys.stderr.write(
+                f"[persona-memory] write LLM duplicate (cat={cand.category}, "
+                f"key={cand.key}) in batch — renamed to '{new_key}' "
+                f"(value snippet: {cand.value[:30]!r})\n"
+            )
+            cand.key = new_key
+
     results: list[tuple[FactCandidate, str]] = []
     for cand in candidates:
         # value 単独ではなく `<category>/<key>: <value>` を embed する。

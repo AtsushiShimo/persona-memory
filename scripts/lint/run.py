@@ -133,16 +133,23 @@ def _fetch_fact(conn: sqlite3.Connection, fact_id: int) -> dict | None:
 
 
 def _fetch_neighbors(
-    conn: sqlite3.Connection, fact_id: int, category: str,
+    conn: sqlite3.Connection, fact_id: int, category: str, key: str,
     embedding: list[float], top_k: int, distance_max: float,
 ) -> list[dict]:
-    """active fact のうち、起点 fact と **同じ category** で自身を除く近傍 top_k 件.
+    """active fact のうち、起点 fact と **同 category かつ同属性** で自身を除く近傍 top_k 件.
 
-    異 category 間 (例: profile/pet vs preference/coffee) で「矛盾」 は論理的に
-    あり得ないため candidate から除外する. 0.5.16 でこの制限を追加した経緯:
-    異 category fact を judge LLM が高 confidence で「矛盾」 と誤判定し,
-    無関係な fact を auto_supersede で次々と消滅させる暴走が観測された.
+    同属性判定は `scripts.write.similarity._is_same_attribute` (= key 末尾単語の一致)
+    に倣う. 例: 起点 key='pet_dog_name' なら近傍 key='pet_dog_name' / 'foo_name' は
+    judge 対象、 'pet_dog_breed' / 'pet_dog_gender' は別属性なので除外.
+
+    0.5.16 で同 category 制限を入れたが, 同 category 内でも異属性 fact 同士を
+    judge LLM が高 confidence で「矛盾」 と誤判定する事象 (例: pet_dog_name=
+    まろん vs pet_dog_breed=ミニチュアダックスフンド を 95% で矛盾と判定) が
+    観測されたため, 0.5.17 で属性 (= key 末尾単語) の一致も要求する.
     """
+    # 循環 import 回避のためここで import
+    from scripts.write.similarity import _is_same_attribute
+
     blob = pack(embedding)
     rows = conn.execute(
         """
@@ -159,13 +166,20 @@ def _fetch_neighbors(
           AND knn.fact_id != ?
         ORDER BY knn.distance
         """,
-        (blob, top_k + 5, category, fact_id),  # +5 で同 cat 候補を確保
+        (blob, top_k + 5, category, fact_id),
     ).fetchall()
-    return [
-        {"id": r[0], "category": r[1], "key": r[2], "value": r[3], "distance": r[4]}
-        for r in rows
-        if r[4] <= distance_max
-    ][:top_k]
+    out: list[dict] = []
+    for r in rows:
+        if r[4] > distance_max:
+            continue
+        if not _is_same_attribute(r[2], key):
+            continue
+        out.append(
+            {"id": r[0], "category": r[1], "key": r[2], "value": r[3], "distance": r[4]}
+        )
+        if len(out) >= top_k:
+            break
+    return out
 
 
 def _auto_supersede(
@@ -239,7 +253,7 @@ def lint_around_fact(
     if not vec:
         return out
     neighbors = _fetch_neighbors(
-        conn, fact_id, fact["category"], vec,
+        conn, fact_id, fact["category"], fact["key"], vec,
         NEIGHBOR_TOP_K, NEIGHBOR_DISTANCE_MAX,
     )
     for n in neighbors:

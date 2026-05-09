@@ -60,11 +60,16 @@ def db_path(tmp_path: Path) -> Path:
 
 
 def _seed_two_facts(conn, value_a: str, value_b: str,
-                    cat: str = "preference", key_a: str = "a", key_b: str = "b",
+                    cat: str = "preference",
+                    key_a: str = "opt_taste", key_b: str = "alt_taste",
                     same_vector: bool = True) -> tuple[int, int]:
     """2 つの fact を入れる. same_vector=True なら同じ vec で近傍判定が必ず通る.
 
     same_vector=False は直交 vector で cosine distance=1.0 になるよう作る.
+
+    default key は **末尾単語が同じ** (= 'taste') にして 0.5.17 の同属性
+    判定 (`_is_same_attribute`) を通るようにする. 異属性のテストは明示的に
+    末尾の違う key (例: 'pet_dog_name' / 'pet_dog_breed') を渡す.
     """
     vec_a = [1.0] + [0.0] * 767
     vec_b = vec_a if same_vector else [0.0, 1.0] + [0.0] * 766  # 直交
@@ -202,11 +207,10 @@ def test_skips_far_neighbors(db_path, monkeypatch):
     conn = connect(db_path)
     try:
         _seed_two_facts(conn, "A", "B", same_vector=False)  # 直交 vector で seed
-        # client.embed の戻り値も b の保存 vector と一致させて、a と直交させる
-        # ("preference/b: B" を embed → [0,1,0,...] / a の vec=[1,0,0,...] とは直交)
+        # 起点 fact (id=2, key=alt_taste) の embed query が a (key=opt_taste) と直交
         client = FakeJudgeClient(
             judgments={("A", "B"): (True, 95)},
-            embedding_map={"preference/b: B": [0.0, 1.0] + [0.0] * 766},
+            embedding_map={"preference/alt_taste: B": [0.0, 1.0] + [0.0] * 766},
         )
         result = L.lint_around_fact(conn, 2, client)
         assert result["pairs_examined"] == 0
@@ -264,6 +268,37 @@ def test_run_records_lint_log(db_path, monkeypatch):
 def test_thresholds_have_expected_default_values():
     assert AUTO_RESOLVE_THRESHOLD == 90
     assert FLAG_THRESHOLD == 60
+
+
+def test_lint_skips_same_category_different_attribute(db_path):
+    """同 category だが key 末尾の単語が違えば judge 対象外 (0.5.17 で追加).
+
+    例: profile/pet_dog_name=まろん と profile/pet_dog_breed=ミニチュア…は
+    別属性 (name vs breed) なので judge LLM の暴走を防ぐ.
+    """
+    conn = connect(db_path)
+    try:
+        vec = [1.0] + [0.0] * 767
+        a = insert_new(conn, FactCandidate("profile", "pet_dog_name", "まろん", 7), vec)
+        b = insert_new(conn, FactCandidate("profile", "pet_dog_breed",
+                                            "ミニチュアダックスフンド", 7), vec)
+        conn.commit()
+        client = FakeJudgeClient(
+            judgments={
+                ("まろん", "ミニチュアダックスフンド"): (True, 95),
+                ("ミニチュアダックスフンド", "まろん"): (True, 95),
+            },
+        )
+        result = lint_around_fact(conn, a, client)
+        # 同 cat 同属性 fact が他にいないので pairs_examined=0
+        assert result["pairs_examined"] == 0
+        # 両方 active
+        statuses = [r[0] for r in conn.execute(
+            "SELECT status FROM facts WHERE id IN (?,?) ORDER BY id", (a, b),
+        ).fetchall()]
+        assert statuses == ["active", "active"]
+    finally:
+        conn.close()
 
 
 def test_lint_skips_facts_in_different_category(db_path):

@@ -86,6 +86,22 @@ def find_by_embedding(
     )
 
 
+def _is_same_attribute(key_a: str, key_b: str) -> bool:
+    """2 つの key が同じ属性 (= attribute) を表しているかを **末尾の単語** で判定.
+
+    write LLM が表記揺れで違う key 名を割り当てた時 (例: `coffee_preference`
+    vs `coffee_taste_preference` = どちらも 'preference' = 同属性) を
+    embedding 近傍で同一視するため. 一方で `pet_dog_name` vs `pet_dog_breed`
+    のような明確に別属性 ('name' vs 'breed') は別物として扱う.
+
+    ヒューリスティックなので完璧ではないが、 異属性誤マッチによる連続 supersede
+    (= 「まろん→ミニチュアダックス→オス」 全部 pet_dog_name で上書き) を防ぐ目的.
+    """
+    a = key_a.split("_")[-1].lower()
+    b = key_b.split("_")[-1].lower()
+    return a == b
+
+
 def find_match(
     conn: sqlite3.Connection,
     category: str,
@@ -93,12 +109,19 @@ def find_match(
     embedding: list[float] | None,
     distance_max: float = EMBED_DISTANCE_MAX,
 ) -> Match | None:
-    """key 一致を最初にチェック → なければ embedding 近傍。"""
+    """key 一致を最初にチェック → なければ embedding 近傍 (同属性のみ)。
+
+    embedding 近傍は表記揺れ救済目的だが, **末尾単語が違う場合は別属性として
+    None を返す** (= 0.5.17 で追加した暴走防止). 例: 起点 key='pet_dog_breed'
+    で近傍 fact が key='pet_dog_name' (まろん) なら別属性なので match しない.
+    """
     m = find_by_key(conn, category, key)
     if m:
         return m
     if embedding:
-        return find_by_embedding(conn, category, embedding, distance_max)
+        cand = find_by_embedding(conn, category, embedding, distance_max)
+        if cand and _is_same_attribute(cand.key, key):
+            return cand
     return None
 
 

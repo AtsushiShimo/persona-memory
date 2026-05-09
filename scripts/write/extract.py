@@ -67,9 +67,39 @@ _PROMPT_TEMPLATE = """\
    - 良い例: `category=profile, key=health_diabetes, value=糖尿病があり甘い物を控えている`
    - 悪い例: `category=profile, key=dog_maron, value=糖尿病があり…` (key=犬なのに value=健康、不一致)
    - 悪い例: `category=rule, key=deep_research_recommendation, value=…推奨` (推奨は rule じゃなく context)
-2. **1 fact = 1 内容**: 複数の事実を 1 つの fact に詰めない
-3. **key は snake_case 英数字、内容を表す**: `coffee_preference`, `pet_dog_name`, `health_diabetes` 等
-4. **同じ value を category 違いで複数回 fact 化しない**
+2. **1 fact = 1 属性 / 出力では key の重複禁止**:
+   1 つの fact は 1 つの属性のみを表す. 1 発話に複数の独立した属性がある場合は
+   **必ず異なる key で別々の fact** に分けて出力する.
+   **同じ key で複数の fact を出すのは絶対禁止** (= 後段で互いに上書きされて情報が失われる).
+
+   - ✅ 発話「愛犬の名前はまろん、ミニチュアダックスフンド、オス」
+     ```
+     [{{"category": "profile", "key": "pet_dog_name",   "value": "まろん", "importance": 7}},
+      {{"category": "profile", "key": "pet_dog_breed",  "value": "ミニチュアダックスフンド", "importance": 6}},
+      {{"category": "profile", "key": "pet_dog_gender", "value": "オス", "importance": 6}}]
+     ```
+   - ❌ 同発話で 3 fact 全部 key="pet_dog_name" にする (上書きされて 1 件しか残らない)
+   - ❌ 1 fact `key=pet_dog_name, value="まろん、ミニチュアダックスフンド、オス"` (詰め込み禁止)
+
+   - ✅ 発話「コーヒーは深煎り派、砂糖なし」
+     ```
+     [{{"category": "preference", "key": "coffee_roast", "value": "深煎り", "importance": 5}},
+      {{"category": "preference", "key": "coffee_sugar", "value": "入れない", "importance": 5}}]
+     ```
+   - ❌ 1 fact `key=coffee_preference, value="深煎り派、砂糖なし"`
+
+   理由: 後で属性ごとに独立に更新可能 (= 浅煎りに変えても砂糖の話が消えない).
+3. **key は snake_case 英数字、属性を表す**:
+   良い key: `coffee_roast`, `coffee_sugar`, `coffee_milk`, `pet_dog_name`,
+   `pet_dog_breed`, `pet_dog_gender`, `health_diabetes`, `phase1_scope` 等.
+   1 ジャンル内で属性を細かく分ける (例: `coffee_*` で複数の独立属性 key を作る).
+4. **value は短い事実形式のみ**:
+   - 良い: `深煎り派` / `まろん` / `糖尿病` / `Phase 1 = MVP で進める`
+   - 悪い: `深煎りが好みだが、今回の発言で浅煎りの方が好きだと判明` (経緯/説明文化)
+   - 悪い: `ユーザーは犬を飼っており、その名前はまろんで…` (主語と前置きを書かない)
+   - 経緯・推測・主語・前置き・「と判明」「と思われる」 等は禁止.
+   - **生発話そのままの主旨だけを短く** 書き写す感覚.
+5. **同じ value を category 違いで複数回 fact 化しない**
 
 ## 抽出対象
 (a) ユーザーが述べた個人的事実 → preference / aversion / profile / skill / context

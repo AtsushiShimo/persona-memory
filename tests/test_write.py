@@ -158,6 +158,24 @@ def test_extract_facts_default_backend_is_ollama():
     assert len(r) == 1
 
 
+def test_is_same_attribute_treats_last_word_as_attribute():
+    """末尾の単語が同じ key 同士は同属性、違えば別属性 (0.5.17 追加)."""
+    from scripts.write.similarity import _is_same_attribute
+
+    # 同末尾 = 同属性
+    assert _is_same_attribute("coffee_preference", "coffee_taste_preference")
+    assert _is_same_attribute("a_name", "b_name")
+    assert _is_same_attribute("name", "name")
+
+    # 異末尾 = 別属性
+    assert not _is_same_attribute("pet_dog_name", "pet_dog_breed")
+    assert not _is_same_attribute("pet_dog_name", "pet_dog_gender")
+    assert not _is_same_attribute("coffee_roast", "coffee_sugar")
+
+    # 大小文字無視
+    assert _is_same_attribute("foo_NAME", "bar_name")
+
+
 # ── similarity / persist ─────────────────────────────────────────────────────
 
 @pytest.fixture
