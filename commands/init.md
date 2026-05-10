@@ -1,5 +1,5 @@
 ---
-description: Set up a new persona (asks 7 persona questions interactively; gender-aware options; uses recommended Ollama models by default)
+description: Set up a new persona (7 persona questions + 5 stance axes interactively; gender-aware options; uses recommended Ollama models by default)
 allowed-tools: Bash, Read, Write, AskUserQuestion
 ---
 
@@ -129,6 +129,90 @@ fi
   2. label: `あなた` / description: "中性、フォーマル寄り"
   3. label: `君` / description: "親しみと、やや上からの距離感"
   4. label: `マスター` / description: "主従関係を演出する特殊な呼び方"
+
+---
+
+## Batch 1B: 立ち位置 5 軸 (思考傾向スライダー)
+
+性格 (Q3) の直後の文脈で **立ち位置** を 5 軸聞く. 各軸 4 オプション
+(`強く A` / `やや A` / `やや B` / `強く B`) で、 「バランス」 を選びたい
+ユーザーは tool が自動で追加する **「Other」 で 0 と入力** する.
+
+複数ペルソナを使う時に思考傾向を意図的に散らして視野狭窄を防ぐための設定.
+各軸は応答スタイルに反映される (boot 層 `persona/stance` に注入).
+
+**実装メモ**: 5 軸を 2 batch (3 軸 + 2 軸) に分けて AskUserQuestion を 2 回呼ぶ
+(1 batch あたり最大 4 questions 制約のため). 各軸の値は -2 / -1 / 0 / +1 / +2
+の整数で内部保持する.
+
+### Batch 1B-1: 3 軸 を 1 回の AskUserQuestion で
+
+#### S1. 保守 ↔ 革新
+
+- **header**: `軸 1/5`
+- **question**: "提案の傾向 (新規性をどれだけ強調するか)"
+- **multiSelect**: false
+- **options**:
+  1. label: `強く保守 (-2)` / description: "実績ある手段や既存パターンを強く優先、不確実な提案は避ける"
+  2. label: `やや保守 (-1)` / description: "原則として既存パターン優先、たまに別案も触れる"
+  3. label: `やや革新 (+1)` / description: "標準解も示しつつ別解・新案を積極的に提案する"
+  4. label: `強く革新 (+2)` / description: "既存パターンより新しい解決経路を優先して提示する"
+
+#### S2. 楽観 ↔ 悲観
+
+- **header**: `軸 2/5`
+- **question**: "提案時のトーン (リスクと可能性のどちらを先に示すか)"
+- **multiSelect**: false
+- **options**:
+  1. label: `強く楽観 (-2)` / description: "うまくいく前提で前向きに、可能性を強調する"
+  2. label: `やや楽観 (-1)` / description: "原則前向き、リスクは聞かれたら答える"
+  3. label: `やや悲観 (+1)` / description: "リスクや問題点を先に挙げてから案を出す"
+  4. label: `強く悲観 (+2)` / description: "失敗パターン・落とし穴を最優先で警告する"
+
+#### S3. 直感 ↔ 分析
+
+- **header**: `軸 3/5`
+- **question**: "結論の出し方 (経験則で素早く vs 根拠を積んでから)"
+- **multiSelect**: false
+- **options**:
+  1. label: `強く直感 (-2)` / description: "経験則や勘で素早く方向を示す、詳細検証は後回し"
+  2. label: `やや直感 (-1)` / description: "原則経験則ベース、必要時のみ検証を加える"
+  3. label: `やや分析 (+1)` / description: "簡単な根拠を示してから結論を述べる"
+  4. label: `強く分析 (+2)` / description: "データ・仕様・原理を先に示してから論理的に結論を導く"
+
+### Batch 1B-2: 2 軸 を 1 回の AskUserQuestion で
+
+#### S4. 慎重 ↔ 大胆
+
+- **header**: `軸 4/5`
+- **question**: "進め方 (確認重視 vs 踏み込み重視)"
+- **multiSelect**: false
+- **options**:
+  1. label: `強く慎重 (-2)` / description: "確認・段階分割・小実験を必ず重ねて手堅く進める"
+  2. label: `やや慎重 (-1)` / description: "原則手堅く、明らかに安全な時のみ踏み込む"
+  3. label: `やや大胆 (+1)` / description: "リスクは挙げるが踏み込んだ提案を先に出す"
+  4. label: `強く大胆 (+2)` / description: "まず踏み込んだ提案、リスクは事後に補足"
+
+#### S5. 共感 ↔ 論理
+
+- **header**: `軸 5/5`
+- **question**: "言い回しの軸 (ユーザー状況への配慮 vs 論理一貫性)"
+- **multiSelect**: false
+- **options**:
+  1. label: `強く共感 (-2)` / description: "ユーザー状況・感情・意図を最優先で配慮"
+  2. label: `やや共感 (-1)` / description: "原則配慮しつつ論理も示す"
+  3. label: `やや論理 (+1)` / description: "論理を主軸に、配慮は補足程度"
+  4. label: `強く論理 (+2)` / description: "感情に流されず論理・整合性・原理原則を貫く"
+
+### Stance の数値変換 (内部処理)
+
+ユーザーの選択をパースして 5 要素 int list `[v1, v2, v3, v4, v5]` を作る:
+
+- ラベル末尾の `(-2)` / `(-1)` / `(+1)` / `(+2)` を抽出して int 化
+- 「Other」 で自由入力した場合は **数値文字列をそのまま** 受け取り int 化 (= 0 等)
+- 範囲外 (-2..+2 外) は警告してデフォルト 0 にフォールバック
+
+後段の seed_persona.py 呼び出しで `--stance "v1,v2,v3,v4,v5"` を渡す.
 
 ---
 
@@ -322,6 +406,8 @@ echo "$NAME" > "$PERSONA_DIR/active-persona"
 
 # 4. persona facts を seed (新スキーマ — scripts.* を import するため
 #    PYTHONPATH に PLUGIN_ROOT を渡す)
+#    Batch 1B (立ち位置 5 軸) で得た値を `--stance "v1,v2,v3,v4,v5"` で渡す.
+#    省略可 (= persona/stance fact が seed されず、 後方互換動作).
 PERSONA_MEMORY_DB="$PERSONA_DIR/$NAME.db" \
 PYTHONPATH="$PLUGIN_ROOT" \
   "$VENV_HOME/.venv/bin/python" "$PLUGIN_ROOT/scripts/seed_persona.py" \
@@ -329,7 +415,8 @@ PYTHONPATH="$PLUGIN_ROOT" \
   --name "$NAME" \
   --role "<Q1>" --gender "<Q2>" --personality "<Q3>" \
   --first-person "<Q5>" --speech-style "<Q6>" \
-  --address-user "<Q4>"
+  --address-user "<Q4>" \
+  --stance "<S1>,<S2>,<S3>,<S4>,<S5>"
 
 # 5. Claude Code 標準 auto-memory との衝突チェック
 #    persona-memory プラグインは独自 DB に記憶を集約する方針なので、
@@ -356,7 +443,7 @@ fi
 
 完了後ユーザーへ:
 
-- 完了サマリー (名前 / 役割 / 性格 / 一人称 / 口調 / DB パス)
+- 完了サマリー (名前 / 役割 / 性格 / 一人称 / 口調 / 立ち位置 5 軸の値 / DB パス)
 - 使ったモデル: `gemma3:4b` (light = write LLM) + `gemma3:12b` (heavy = recall LLM) + `nomic-embed-text` (embed)
 - 変更したい場合は `/persona-memory:configure-models`
 - **Claude Code を完全終了 → 再起動** で hook がロードされる

@@ -116,3 +116,70 @@ def test_seed_persona_facts_are_boot_layer(db_path: Path):
     assert len(facts) == 15
     cats = {f["category"] for f in facts}
     assert cats == {"persona", "rule"}
+
+
+def test_seed_without_stance_does_not_create_stance_fact(db_path: Path):
+    """stance 省略時は persona/stance fact が作られない (後方互換)."""
+    with patch("scripts.seed_persona.OllamaClient") as Mock:
+        Mock.return_value.embed.return_value = []
+        seed(db_path, **_seed_kwargs())  # stance 引数なし
+
+    conn = connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT id FROM facts WHERE category='persona' AND key='stance'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is None
+
+
+def test_seed_with_stance_creates_natural_language_fact(db_path: Path):
+    """stance 5 値で seed → persona/stance fact が自然語 value で作られる."""
+    with patch("scripts.seed_persona.OllamaClient") as Mock:
+        Mock.return_value.embed.return_value = []
+        # 革新 +1 / 悲観 0 / 分析 -1 / 大胆 +2 / 共感 -1
+        seed(db_path, **{**_seed_kwargs(), "stance": [1, 0, -1, 2, -1]})
+
+    conn = connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT value, importance FROM facts "
+            "WHERE category='persona' AND key='stance' AND status='active'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    value, importance = row[0], row[1]
+    assert importance == 9
+    # 5 軸全てが value に含まれている
+    assert "保守-革新軸" in value
+    assert "楽観-悲観軸" in value
+    assert "直感-分析軸" in value
+    assert "慎重-大胆軸" in value
+    assert "共感-論理軸" in value
+    # 各タグの方向が値どおりに記述されている
+    assert "やや革新寄り" in value     # +1
+    assert "バランス" in value          # 0
+    assert "やや直感寄り" in value     # -1 (左 = 直感)
+    assert "強く大胆寄り" in value     # +2
+    assert "やや共感寄り" in value     # -1
+
+
+def test_parse_stance_csv_validates_format():
+    """--stance CSV のパーサが要素数 / 範囲 / 整数を検証."""
+    from scripts.seed_persona import _parse_stance_csv
+
+    # 正常
+    assert _parse_stance_csv("0,1,-1,2,-2") == [0, 1, -1, 2, -2]
+    assert _parse_stance_csv(" 0 , 1 , -1 , 2 , -2 ") == [0, 1, -1, 2, -2]
+
+    # 異常
+    with pytest.raises(ValueError, match="5 要素必要"):
+        _parse_stance_csv("0,1,-1")
+    with pytest.raises(ValueError, match="整数でない"):
+        _parse_stance_csv("0,1,abc,2,-1")
+    with pytest.raises(ValueError, match=r"-2\.\.\+2"):
+        _parse_stance_csv("0,1,-3,2,-1")
+    with pytest.raises(ValueError, match=r"-2\.\.\+2"):
+        _parse_stance_csv("0,1,1,2,3")
