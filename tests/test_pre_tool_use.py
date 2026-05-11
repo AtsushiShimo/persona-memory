@@ -11,9 +11,12 @@ ROOT = Path(__file__).resolve().parent.parent
 PYTHON = sys.executable
 
 
-def _run_hook(payload: dict) -> tuple[int, str, str]:
+def _run_hook(payload: dict, debug: bool = False) -> tuple[int, str, str]:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT)
+    env.pop("PERSONA_MEMORY_DEBUG", None)
+    if debug:
+        env["PERSONA_MEMORY_DEBUG"] = "c"
     r = subprocess.run(
         [PYTHON, "-m", "scripts.hooks.on_pre_tool_use"],
         input=json.dumps(payload).encode(),
@@ -308,3 +311,70 @@ def test_allow_complex_commit_message_with_mkdir_and_path():
         "tool_input": {"command": f"git commit -m \"{msg}\""},
     })
     assert out.strip() == "", f"unexpectedly blocked: {out}"
+
+
+# ── PERSONA_MEMORY_DEBUG bypass (DB block のみ解除、 auto-memory block は維持) ──
+
+def test_debug_mode_bypasses_sqlite3_block():
+    """PERSONA_MEMORY_DEBUG が set されていれば DB 直接アクセスは通る."""
+    rc, out, _ = _run_hook({
+        "tool_name": "Bash",
+        "tool_input": {"command": "sqlite3 .persona-memory/foo.db 'SELECT 1'"},
+    }, debug=True)
+    assert out.strip() == "", f"debug mode should bypass DB block: {out}"
+
+
+def test_debug_mode_bypasses_cat_db_block():
+    rc, out, _ = _run_hook({
+        "tool_name": "Bash",
+        "tool_input": {"command": "cat .persona-memory/foo.db | head"},
+    }, debug=True)
+    assert out.strip() == ""
+
+
+def test_debug_mode_bypasses_read_db_block():
+    rc, out, _ = _run_hook({
+        "tool_name": "Read",
+        "tool_input": {"file_path": "/proj/.persona-memory/foo.db"},
+    }, debug=True)
+    assert out.strip() == ""
+
+
+def test_debug_mode_does_not_bypass_auto_memory_block():
+    """auto-memory block は debug mode でも維持される (記憶分散防止の独立保護)."""
+    rc, out, _ = _run_hook({
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/Users/x/.claude/projects/-Users-x-proj/memory/notes.md",
+            "content": "...",
+        },
+    }, debug=True)
+    assert _is_denied(out), "auto-memory block should stay even in debug mode"
+    assert "auto-memory" in _denial_reason(out)
+
+
+def test_debug_mode_does_not_bypass_bash_auto_memory_block():
+    rc, out, _ = _run_hook({
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": "echo 'x' >> ~/.claude/projects/-Users-x-proj/memory/n.md",
+        },
+    }, debug=True)
+    assert _is_denied(out)
+
+
+def test_empty_debug_env_does_not_bypass():
+    """PERSONA_MEMORY_DEBUG='' (空文字) は debug mode 扱いしない."""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(ROOT)
+    env["PERSONA_MEMORY_DEBUG"] = ""
+    r = subprocess.run(
+        [PYTHON, "-m", "scripts.hooks.on_pre_tool_use"],
+        input=json.dumps({
+            "tool_name": "Bash",
+            "tool_input": {"command": "sqlite3 .persona-memory/foo.db .schema"},
+        }).encode(),
+        env=env,
+        capture_output=True,
+    )
+    assert _is_denied(r.stdout.decode())

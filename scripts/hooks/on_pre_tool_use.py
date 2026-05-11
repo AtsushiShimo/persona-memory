@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 
@@ -141,6 +142,13 @@ def main() -> int:
     tool_name = payload.get("tool_name", "")
     tool_input = payload.get("tool_input") or {}
 
+    # debug mode (PERSONA_MEMORY_DEBUG set & non-empty) では DB 直接アクセス
+    # block を skip する。 plugin 開発時に別 project の DB を seed / 検査する
+    # 等の正当な作業を hook が誤発火で止めるのを防ぐため。
+    # auto-memory block (forbid_auto_memory ルール) は debug 中も維持する —
+    # こちらは「記憶を分散させない」 という保護で、 DB 直接アクセスとは別軸。
+    debug_mode = bool(os.environ.get("PERSONA_MEMORY_DEBUG", "").strip())
+
     reason: str | None = None
     if tool_name == "Bash":
         reason = _is_blocked_bash(tool_input.get("command", "") or "")
@@ -148,6 +156,9 @@ def main() -> int:
         reason = _is_blocked_read(tool_input.get("file_path", "") or "")
     elif tool_name in _WRITE_TOOL_NAMES:
         reason = _is_blocked_write(tool_input.get("file_path", "") or "")
+
+    if debug_mode and reason == DENY_MESSAGE_DB:
+        reason = None
 
     if reason:
         output = {
