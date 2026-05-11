@@ -166,6 +166,82 @@ def test_seed_with_stance_creates_natural_language_fact(db_path: Path):
     assert "やや共感寄り" in value     # -1
 
 
+def test_add_stance_to_db_without_existing_stance(db_path: Path):
+    """既存 stance fact が無い DB に add_stance で追加できる."""
+    from scripts.add_stance import add_stance_if_missing
+    # まず stance なしで seed
+    with patch("scripts.seed_persona.OllamaClient") as Mock:
+        Mock.return_value.embed.return_value = []
+        seed(db_path, **_seed_kwargs())  # stance なし
+    # add_stance を呼ぶ
+    with patch("scripts.add_stance.OllamaClient") as Mock2:
+        Mock2.return_value.embed.return_value = []
+        result = add_stance_if_missing(db_path, [1, 0, -1, 2, -1])
+    assert result == "added"
+    # DB に persona/stance が active で入っている
+    conn = connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT value, importance FROM facts "
+            "WHERE category='persona' AND key='stance' AND status='active'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    assert row[1] == 9
+    assert "やや革新寄り" in row[0]
+    assert "強く大胆寄り" in row[0]
+
+
+def test_add_stance_skips_if_already_set(db_path: Path):
+    """既に persona/stance が設定済みなら何もしない."""
+    from scripts.add_stance import add_stance_if_missing
+    # stance 付きで seed
+    with patch("scripts.seed_persona.OllamaClient") as Mock:
+        Mock.return_value.embed.return_value = []
+        seed(db_path, **{**_seed_kwargs(), "stance": [0, 0, 0, 0, 0]})
+    # 別の値で add_stance を呼ぶ
+    with patch("scripts.add_stance.OllamaClient") as Mock2:
+        Mock2.return_value.embed.return_value = []
+        result = add_stance_if_missing(db_path, [2, 2, 2, 2, 2])
+    assert result == "exists"
+    # value は元の (0,0,0,0,0 = 全部バランス) のまま
+    conn = connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT value FROM facts "
+            "WHERE category='persona' AND key='stance' AND status='active'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert "バランス" in row[0]
+    assert "強く" not in row[0]  # 上書きされていない
+
+
+def test_add_stance_marks_boot_dirty(db_path: Path):
+    """add_stance 成功時に boot 層 dirty フラグが立つ (= 次発話で再注入)."""
+    from scripts.add_stance import add_stance_if_missing
+    from scripts.boot.inject import is_dirty
+
+    with patch("scripts.seed_persona.OllamaClient") as Mock:
+        Mock.return_value.embed.return_value = []
+        seed(db_path, **_seed_kwargs())
+
+    conn = connect(db_path)
+    assert is_dirty(conn) is False  # seed 直後は dirty なし
+    conn.close()
+
+    with patch("scripts.add_stance.OllamaClient") as Mock2:
+        Mock2.return_value.embed.return_value = []
+        add_stance_if_missing(db_path, [1, 0, 0, 0, 0])
+
+    conn = connect(db_path)
+    try:
+        assert is_dirty(conn) is True
+    finally:
+        conn.close()
+
+
 def test_parse_stance_csv_validates_format():
     """--stance CSV のパーサが要素数 / 範囲 / 整数を検証."""
     from scripts.seed_persona import _parse_stance_csv
