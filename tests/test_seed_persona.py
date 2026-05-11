@@ -31,7 +31,7 @@ def _seed_kwargs() -> dict:
 
 
 def test_seed_inserts_all_boot_facts(db_path: Path):
-    """boot 層 = persona 14 + rule 2 = 16 件 seed される。"""
+    """boot 層 = persona 15 + rule 2 = 17 件 seed される。"""
     with patch("scripts.seed_persona.OllamaClient") as Mock:
         Mock.return_value.embed.return_value = []
         seed(db_path, **_seed_kwargs())
@@ -50,14 +50,15 @@ def test_seed_inserts_all_boot_facts(db_path: Path):
     persona_keys = [r[0] for r in persona_rows]
     rule_keys = [r[0] for r in rule_rows]
 
-    # persona: 7 基本 + 7 default 行動指針 = 14
-    assert len(persona_rows) == 14
+    # persona: 7 基本 + 8 default 行動指針 = 15
+    assert len(persona_rows) == 15
     for k in (
         "role", "identity", "personality", "gender", "first_person",
         "speech_style", "address_user",
         "response_brevity", "confirmation_before_acting", "silent_memory",
         "natural_voice", "health_check_trigger", "explicit_recall_via_mcp",
         "no_hallucinated_user_facts",
+        "playbook_after_web_research",
     ):
         assert k in persona_keys, f"missing persona/{k}"
 
@@ -78,7 +79,7 @@ def test_seed_writes_embeddings_when_available(db_path: Path):
         n = conn.execute("SELECT COUNT(*) FROM fact_embeddings").fetchone()[0]
     finally:
         conn.close()
-    assert n == 16  # persona 14 + rule 2
+    assert n == 17  # persona 15 + rule 2
 
 
 def test_seed_idempotent(db_path: Path):
@@ -113,7 +114,9 @@ def test_seed_persona_facts_are_boot_layer(db_path: Path):
     finally:
         conn.close()
 
-    # boot 層 = persona 14 + rule 2 = 16 件
+    # seed されるのは persona 15 + rule 2 = 17 件だが、
+    # fetch_boot_facts は playbook_* (= 状況依存ノウハウ) を除外するため
+    # SessionStart 注入対象は 16 件 (playbook_after_web_research が除外)
     assert len(facts) == 16
     cats = {f["category"] for f in facts}
     assert cats == {"persona", "rule"}

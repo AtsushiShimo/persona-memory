@@ -36,8 +36,13 @@ EMBED_MODEL = os.environ.get("PERSONA_EMBED_MODEL", "nomic-embed-text")
 def _backfill_episode_embeddings(conn, client) -> int:
     """episode_embeddings に未登録の episodes を embedding 化して埋める.
 
-    戻り値: backfill した件数.
+    戻り値: backfill した件数. episode_embeddings table が存在しない場合は 0.
     """
+    # 古い DB / 不完全な fixture で table が無い場合は安全に skip
+    if not conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name='episode_embeddings'"
+    ).fetchone():
+        return 0
     rows = conn.execute(
         """
         SELECT e.id, e.content
@@ -71,8 +76,12 @@ def _purge_superseded_embeddings(conn) -> int:
     旧 supersede() は embedding を残していたため、recall の vec0 knn で
     active 外の古い embedding が枠を喰い、関連 fact が漏れる現象があった。
     新しい supersede() は削除するが、過去に蓄積された残骸を一括クリーン。
-    戻り値: 削除した件数.
+    戻り値: 削除した件数. fact_embeddings table が無い場合は 0.
     """
+    if not conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name='fact_embeddings'"
+    ).fetchone():
+        return 0
     cur = conn.execute(
         "DELETE FROM fact_embeddings WHERE fact_id IN ("
         "  SELECT id FROM facts WHERE status='superseded'"
@@ -90,8 +99,12 @@ def _refresh_fact_embeddings(conn, client) -> int:
     無関係な fact と cosine 距離 0 で衝突していた。新フォーマットで
     全 fact を統一すると衝突が解消する。idempotent (何度走らせても同結果)。
 
-    戻り値: 再生成した件数.
+    戻り値: 再生成した件数. fact_embeddings table が無い場合は 0.
     """
+    if not conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name='fact_embeddings'"
+    ).fetchone():
+        return 0
     rows = conn.execute(
         "SELECT id, category, key, value FROM facts "
         "WHERE status='active' ORDER BY id"
@@ -116,6 +129,66 @@ def _refresh_fact_embeddings(conn, client) -> int:
                 file=sys.stderr,
             )
     return n
+
+
+def _migrate_facts_check_constraint(conn) -> bool:
+    """既存 facts テーブルの CHECK 制約に 'knowledge' が無ければ追加する.
+
+    SQLite は ALTER TABLE で CHECK を変更できないため、 facts_new を作って
+    データを移し、 旧 facts を drop して RENAME する。 idempotent — 既に
+    'knowledge' が含まれている DB では何もしない。
+    戻り値: 実際に再作成した場合 True.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='facts'"
+    ).fetchone()
+    if not row:
+        return False
+    if "'knowledge'" in row[0]:
+        return False  # already migrated
+
+    # facts 再作成中は FK チェックを一時 OFF (conflicts が facts(id) を参照しているため)
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        conn.execute(
+            "CREATE TABLE facts_new ("
+            "  id                INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  category          TEXT NOT NULL CHECK (category IN ("
+            "    'persona','rule','preference','aversion','profile',"
+            "    'skill','context','knowledge')),"
+            "  key               TEXT NOT NULL,"
+            "  value             TEXT NOT NULL,"
+            "  importance        INTEGER NOT NULL CHECK (importance BETWEEN 1 AND 9),"
+            "  access_count      INTEGER NOT NULL DEFAULT 0,"
+            "  status            TEXT NOT NULL CHECK (status IN ('active','superseded')) DEFAULT 'active',"
+            "  supersedes        INTEGER REFERENCES facts(id),"
+            "  superseded_by     INTEGER REFERENCES facts(id),"
+            "  source            TEXT,"
+            "  created_at        TEXT NOT NULL DEFAULT (datetime('now', '+9 hours')),"
+            "  updated_at        TEXT NOT NULL DEFAULT (datetime('now', '+9 hours')),"
+            "  last_accessed_at  TEXT"
+            ")"
+        )
+        conn.execute(
+            "INSERT INTO facts_new "
+            "SELECT id, category, key, value, importance, access_count, status, "
+            "       supersedes, superseded_by, source, created_at, updated_at, "
+            "       last_accessed_at "
+            "FROM facts"
+        )
+        conn.execute("DROP TABLE facts")
+        conn.execute("ALTER TABLE facts_new RENAME TO facts")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_facts_active_unique "
+            "ON facts(category, key) WHERE status = 'active'"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_facts_category   ON facts(category)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_facts_status     ON facts(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_facts_supersedes ON facts(supersedes)")
+        conn.commit()
+        return True
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
 
 
 def _ensure_lint_tables(conn) -> bool:
@@ -167,10 +240,14 @@ def upgrade(db_path: Path) -> dict[str, int]:
         "deprecated": 0, "episodes_embedded": 0,
         "facts_re_embedded": 0, "superseded_purged": 0,
         "lint_tables_added": 0,
+        "facts_check_migrated": 0,
     }
     conn = connect(db_path)
     client = OllamaClient()
     try:
+        if _migrate_facts_check_constraint(conn):
+            counts["facts_check_migrated"] = 1
+            print("  migrated facts CHECK constraint (added 'knowledge' category)")
         if _ensure_lint_tables(conn):
             counts["lint_tables_added"] = 1
             print("  added lint tables (conflicts, lint_log)")
@@ -309,7 +386,8 @@ def main() -> None:
         f"episodes_embedded={counts['episodes_embedded']}, "
         f"superseded_purged={counts['superseded_purged']}, "
         f"facts_re_embedded={counts['facts_re_embedded']}, "
-        f"lint_tables_added={counts['lint_tables_added']}"
+        f"lint_tables_added={counts['lint_tables_added']}, "
+        f"facts_check_migrated={counts['facts_check_migrated']}"
     )
 
 

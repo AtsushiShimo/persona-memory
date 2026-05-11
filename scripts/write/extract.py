@@ -30,6 +30,7 @@ WRITE_MODEL = os.environ.get(
 
 VALID_CATEGORIES = (
     "persona", "rule", "preference", "aversion", "profile", "skill", "context",
+    "knowledge",
 )
 
 

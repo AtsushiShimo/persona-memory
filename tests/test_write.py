@@ -80,8 +80,10 @@ def test_parse_response_with_code_fence():
 
 
 def test_parse_response_invalid_category_dropped():
+    # 'unknown' は VALID_CATEGORIES に含まれないので drop される.
+    # ('knowledge' は 0.5.25 以降 valid なので、 invalid 例には使えない).
     text = json.dumps([
-        {"category": "knowledge", "key": "x", "value": "y", "importance": 5},
+        {"category": "unknown", "key": "x", "value": "y", "importance": 5},
         {"category": "skill", "key": "k", "value": "v", "importance": 5},
     ])
     r = parse_response(text)

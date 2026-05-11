@@ -71,6 +71,67 @@ async def write_fact(
 
 
 @mcp.tool()
+async def save_knowledge(
+    source_url: str,
+    title: str,
+    summary: str,
+    importance: int = 7,
+) -> dict[str, Any]:
+    """Save external knowledge (web research results) as a structured fact.
+
+    Called by the main agent after web research (WebFetch / web-page-reader /
+    x-post-reader skills etc.) to persist the findings as long-lived knowledge.
+    Same URL re-research overwrites the previous entry (last-write-wins);
+    different URLs about the same topic coexist as separate entries.
+
+    Args:
+      source_url: URL of the source (used to derive a stable key and stored
+        as the fact's source provenance).
+      title: short title of the article/page.
+      summary: 2-5 sentence summary of the key takeaways.
+      importance: 1-10 (default 7; higher than typical preferences/skills
+        because external knowledge is long-lived).
+    """
+    if not (1 <= importance <= 10):
+        return {"error": "importance must be between 1 and 10"}
+    if not source_url:
+        return {"error": "source_url is required"}
+    if not title:
+        return {"error": "title is required"}
+    if not summary:
+        return {"error": "summary is required"}
+
+    import hashlib
+    url_hash = hashlib.sha1(source_url.encode("utf-8")).hexdigest()[:10]
+    key = f"k_{url_hash}"
+    value = f"{title}\n{summary}\nsource: {source_url}"
+
+    fact_id = db.upsert_fact(
+        category="knowledge",
+        key=key,
+        value=value,
+        importance=importance,
+        source=source_url,
+    )
+    try:
+        vec = await embed_text(f"knowledge/{key}: {value}")
+    except EmbeddingError as e:
+        return {
+            "fact_id": fact_id,
+            "key": key,
+            "embedded": False,
+            "warning": str(e),
+        }
+    db.write_fact_embedding(fact_id, pack_embedding(vec))
+    return {
+        "fact_id": fact_id,
+        "key": key,
+        "embedded": True,
+        "embedding_dim": len(vec),
+    }
+
+
+@mcp.tool()
 async def search_memory(
     query: str,
     top_k: int = 5,

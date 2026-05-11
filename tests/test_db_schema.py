@@ -67,9 +67,11 @@ def test_facts_unique_active_constraint(db: sqlite3.Connection):
 
 
 def test_facts_category_check(db: sqlite3.Connection):
+    # 'unknown' は CHECK 制約に含まれないので必ず弾かれる.
+    # ('knowledge' は 0.5.25 以降 valid なので、 invalid 例には使えない).
     with pytest.raises(sqlite3.IntegrityError):
         db.execute(
-            "INSERT INTO facts(category, key, value, importance) VALUES ('knowledge','x','y',5)"
+            "INSERT INTO facts(category, key, value, importance) VALUES ('unknown','x','y',5)"
         )
 
 

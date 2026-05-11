@@ -21,7 +21,7 @@
 
 ---
 
-## 2. 現在の状態 (2026-05-11, version 0.5.21)
+## 2. 現在の状態 (2026-05-11, version 0.5.25)
 
 ### 動く機能
 
@@ -41,6 +41,7 @@
 | **playbook (条件付きノウハウ)** | category=persona + key prefix `playbook_*`. SessionStart 注入除外、 dynamic recall でベクター hit | `scripts/write/extract.py`, `boot/inject.py`, `recall/search.py` |
 | **立ち位置 5 軸** | init 時 + 後付けで `persona/stance` に自然語形式で記録 | `scripts/seed_persona.py`, `add_stance.py` |
 | **MCP search_memory 条件付き許可** | 自動 recall で物足りない時のみ main agent が意図的に呼んで補強検索 | `boot/defaults.py` の `persona/explicit_recall_via_mcp` |
+| **外部ナレッジ保存** | web 調査 (WebFetch / web-page-reader / x-post-reader) 結果を構造化して category=`knowledge` で保存。 同 URL 再調査で上書き、 別 URL は並存 | `server/main.py:save_knowledge`, `boot/defaults.py:playbook_after_web_research` |
 
 ### slash commands
 
@@ -191,7 +192,6 @@ write は detached child なので hook 経由で投入する必要がある。 
 ### 7.1 ユーザー合意済 v2 残 (合意外 = 着手厳禁)
 
 - `/persona-memory:condense` — boot 層が肥大化した時の要約統合
-- `/persona-memory:learn-from <URL>` — 外部知識の取り込み
 - `/persona-memory:allow-last + secret-allowlist` — 機密誤検出時の上書き
 - 3 並列 Ollama daemon 最適化
 - topic タグ (source 列の構造化)
@@ -269,4 +269,4 @@ persona-memory/
 
 ---
 
-最終更新: 2026-05-11 (version 0.5.21)
+最終更新: 2026-05-11 (version 0.5.25)

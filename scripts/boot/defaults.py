@@ -150,6 +150,23 @@ DEFAULT_BOOT_FACTS: list[tuple[str, str, str, int]] = [
         9,
     ),
     (
+        "persona", "playbook_after_web_research",
+        "ユーザーから web 調査 / 外部情報の取得を頼まれて、 WebFetch / "
+        "web-page-reader / x-post-reader 等の skill / tool を使って情報を取得した時は、 "
+        "結果を応答に返すだけで終わらせず、 "
+        "**`mcp__persona-memory__save_knowledge` ツールを呼んで構造化保存** する。"
+        "引数: source_url (取得した URL), title (記事 / ページの題), "
+        "summary (要点 2-5 文), importance (重要度 1-9, 通常は 7)。"
+        "保存することで次セッション以降の関連話題で『以前調べた件で〜』 と"
+        "自然に思い出せるようになる。"
+        "例外: (1) ユーザーが『一度だけ調べて』『保存不要』 等明示的に保存を断った時、 "
+        "(2) 取得結果が空 / 内容無しの場合、 "
+        "(3) 取得情報が時刻依存で長期保存に向かないもの (株価 / リアルタイム数値 等). "
+        "key 衝突 (= 同 URL の再調査) では新内容で上書き、 "
+        "別 URL の関連記事は別 key で並存する.",
+        8,
+    ),
+    (
         "rule", "forbid_auto_memory",
         "**Claude Code 標準の memory 機構** "
         "(`~/.claude/projects/<project>/memory/` 配下のファイル / `MEMORY.md`) "

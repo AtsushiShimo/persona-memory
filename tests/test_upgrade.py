@@ -291,3 +291,84 @@ def test_upgrade_does_not_touch_episodes_and_other_categories(db_path: Path):
     assert pref[0] == "深煎り"
     assert aver[0] == "糖尿病で控えてる"
     assert ep[0] == "昨日の話"
+
+
+# ── facts CHECK 制約 migration (0.5.25: 'knowledge' category 追加) ─────────
+
+def test_facts_check_migration_adds_knowledge_to_existing_db(tmp_path: Path):
+    """0.5.24 以前の DB を再現 → upgrade で 'knowledge' を含む CHECK に migrate される.
+
+    fixture: init_db() で完全初期化した後、 facts table だけ drop して
+    0.5.24 以前の旧 CHECK 制約版で再作成する (他テーブル / vec0 は維持).
+    """
+    db_path = tmp_path / "old.db"
+    init_db(db_path)
+    conn = connect(db_path)
+    try:
+        # facts を旧 CHECK 制約 ('knowledge' なし) に差し替え
+        conn.execute("DROP TABLE facts")
+        conn.execute(
+            "CREATE TABLE facts ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  category TEXT NOT NULL CHECK (category IN ("
+            "    'persona','rule','preference','aversion','profile','skill','context')),"
+            "  key TEXT NOT NULL, value TEXT NOT NULL,"
+            "  importance INTEGER NOT NULL CHECK (importance BETWEEN 1 AND 9),"
+            "  access_count INTEGER NOT NULL DEFAULT 0,"
+            "  status TEXT NOT NULL CHECK (status IN ('active','superseded')) DEFAULT 'active',"
+            "  supersedes INTEGER REFERENCES facts(id),"
+            "  superseded_by INTEGER REFERENCES facts(id),"
+            "  source TEXT,"
+            "  created_at TEXT NOT NULL DEFAULT (datetime('now', '+9 hours')),"
+            "  updated_at TEXT NOT NULL DEFAULT (datetime('now', '+9 hours')),"
+            "  last_accessed_at TEXT"
+            ")"
+        )
+        conn.execute(
+            "INSERT INTO facts(category, key, value, importance) VALUES "
+            "('preference', 'coffee', '深煎り', 5)"
+        )
+        conn.commit()
+        # 移行前は knowledge を入れようとすると CHECK 違反
+        import sqlite3
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO facts(category, key, value, importance) VALUES "
+                "('knowledge', 'k_xxx', 'test', 7)"
+            )
+    finally:
+        conn.close()
+
+    # upgrade で migration を走らせる
+    with patch("scripts.upgrade.OllamaClient") as Mock:
+        Mock.return_value.embed.return_value = []
+        counts = upgrade(db_path)
+    assert counts["facts_check_migrated"] == 1
+
+    # 既存データは残っている
+    conn = connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT value FROM facts WHERE category='preference' AND key='coffee'"
+        ).fetchone()
+        assert row[0] == "深煎り"
+        # 'knowledge' が INSERT 可能になっている
+        conn.execute(
+            "INSERT INTO facts(category, key, value, importance) VALUES "
+            "('knowledge', 'k_test', 'web 記事の要約', 7)"
+        )
+        conn.commit()
+        n = conn.execute(
+            "SELECT COUNT(*) FROM facts WHERE category='knowledge'"
+        ).fetchone()[0]
+        assert n == 1
+    finally:
+        conn.close()
+
+
+def test_facts_check_migration_is_idempotent(db_path: Path):
+    """新規 DB (既に 'knowledge' を含む CHECK) では migration は no-op."""
+    with patch("scripts.upgrade.OllamaClient") as Mock:
+        Mock.return_value.embed.return_value = []
+        counts = upgrade(db_path)
+    assert counts["facts_check_migrated"] == 0

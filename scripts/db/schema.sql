@@ -6,7 +6,7 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS facts (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
-  category          TEXT NOT NULL CHECK (category IN ('persona','rule','preference','aversion','profile','skill','context')),
+  category          TEXT NOT NULL CHECK (category IN ('persona','rule','preference','aversion','profile','skill','context','knowledge')),
   key               TEXT NOT NULL,
   value             TEXT NOT NULL,
   importance        INTEGER NOT NULL CHECK (importance BETWEEN 1 AND 9),
