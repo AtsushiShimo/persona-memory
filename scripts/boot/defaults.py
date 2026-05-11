@@ -183,5 +183,26 @@ DEFAULT_BOOT_FACTS: list[tuple[str, str, str, int]] = [
 ]
 
 
-# DEFAULT_BOOT_FACTS の (category, key) を集合化 (write LLM 上書き保護用)
-PROTECTED_KEYS = {(cat, key) for cat, key, _, _ in DEFAULT_BOOT_FACTS}
+# ペルソナ固有の核 9 属性 (seed_persona.py で init 時に書かれる).
+# 0.5.25 までは保護されておらず、 write LLM が同 key で値を返すと簡単に
+# 上書きされて identity / role / address_user 等が雑談で汚染される事故
+# (ソフィア事案) が発生した。 0.5.26 から PROTECTED_KEYS に union する。
+PERSONA_CORE_KEYS: set[tuple[str, str]] = {
+    ("persona", "role"),
+    ("persona", "identity"),
+    ("persona", "personality"),
+    ("persona", "gender"),
+    ("persona", "first_person"),
+    ("persona", "speech_style"),
+    ("persona", "address_user"),
+    ("persona", "stance"),
+    ("persona", "persona_name"),
+}
+
+# DEFAULT_BOOT_FACTS の (category, key) (default 行動指針) +
+# PERSONA_CORE_KEYS (init seed されるペルソナ固有属性) を保護する.
+# write LLM がこれらの key で値を返しても persist 経路で reject される.
+PROTECTED_KEYS = (
+    {(cat, key) for cat, key, _, _ in DEFAULT_BOOT_FACTS}
+    | PERSONA_CORE_KEYS
+)

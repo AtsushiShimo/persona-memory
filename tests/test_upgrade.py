@@ -372,3 +372,103 @@ def test_facts_check_migration_is_idempotent(db_path: Path):
         Mock.return_value.embed.return_value = []
         counts = upgrade(db_path)
     assert counts["facts_check_migrated"] == 0
+
+
+# ── PERSONA_CORE_KEYS の汚染復元 (0.5.26: ソフィア事案の救済) ───────────────
+
+def test_restore_persona_core_recovers_from_init_seed(db_path: Path):
+    """write LLM に汚染された identity/role 等を source='init' から復元する."""
+    # seed (= source='init' 入る)
+    with patch("scripts.seed_persona.OllamaClient") as Mock:
+        Mock.return_value.embed.return_value = []
+        seed(db_path, **_seed_kwargs())
+
+    # ソフィア事案を再現: identity / role / address_user を write LLM で上書き
+    conn = connect(db_path)
+    try:
+        # 元 active の identity を superseded に降格 + 汚染 value を新規 insert
+        for cat, key, bad_value in [
+            ("persona", "identity", "雑談で書かれたゴミ"),
+            ("persona", "role", "stitch の障害情報を検索"),
+            ("persona", "address_user", "inbox ってなんなの？"),
+        ]:
+            old = conn.execute(
+                "SELECT id FROM facts WHERE category=? AND key=? AND status='active'",
+                (cat, key),
+            ).fetchone()
+            assert old is not None
+            conn.execute("UPDATE facts SET status='superseded' WHERE id=?", (old[0],))
+            conn.execute(
+                "INSERT INTO facts(category, key, value, importance, source) "
+                "VALUES (?, ?, ?, 5, 'conversation')",
+                (cat, key, bad_value),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # upgrade 実行 (= 復元 step が走る)
+    with patch("scripts.upgrade.OllamaClient") as Mock:
+        Mock.return_value.embed.return_value = []
+        counts = upgrade(db_path)
+    assert counts["persona_core_restored"] == 3
+
+    # active fact が init 値に戻っている
+    conn = connect(db_path)
+    try:
+        for cat, key, expected in [
+            ("persona", "identity", "このペルソナの名前は『テスト太郎』"),
+            ("persona", "role", "バックエンドエンジニアの相棒"),
+            ("persona", "address_user", "あなた"),
+        ]:
+            row = conn.execute(
+                "SELECT value, source FROM facts "
+                "WHERE category=? AND key=? AND status='active'",
+                (cat, key),
+            ).fetchone()
+            assert row[0] == expected
+            assert row[1] == "restore"
+    finally:
+        conn.close()
+
+
+def test_restore_persona_core_is_idempotent(db_path: Path):
+    """汚染されていない DB では no-op (init と active が一致するので何もしない)."""
+    with patch("scripts.seed_persona.OllamaClient") as Mock:
+        Mock.return_value.embed.return_value = []
+        seed(db_path, **_seed_kwargs())
+
+    with patch("scripts.upgrade.OllamaClient") as Mock:
+        Mock.return_value.embed.return_value = []
+        counts = upgrade(db_path)
+    assert counts["persona_core_restored"] == 0
+
+
+def test_restore_persona_core_skips_keys_without_init_seed(db_path: Path):
+    """source='init' が無い key (= 0.5.0 以前の seed 等) は skip する."""
+    with patch("scripts.seed_persona.OllamaClient") as Mock:
+        Mock.return_value.embed.return_value = []
+        seed(db_path, **_seed_kwargs())
+
+    # source='init' を全部 'manual' に書き換え (init seed が無いケースを再現)
+    conn = connect(db_path)
+    try:
+        conn.execute("UPDATE facts SET source='manual' WHERE source='init'")
+        # active な identity を汚染値で上書き
+        old = conn.execute(
+            "SELECT id FROM facts WHERE category='persona' AND key='identity' AND status='active'"
+        ).fetchone()
+        conn.execute("UPDATE facts SET status='superseded' WHERE id=?", (old[0],))
+        conn.execute(
+            "INSERT INTO facts(category, key, value, importance, source) "
+            "VALUES ('persona', 'identity', 'ゴミ', 5, 'conversation')"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with patch("scripts.upgrade.OllamaClient") as Mock:
+        Mock.return_value.embed.return_value = []
+        counts = upgrade(db_path)
+    # init seed が無いので復元できない (skip)
+    assert counts["persona_core_restored"] == 0

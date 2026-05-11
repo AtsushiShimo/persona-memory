@@ -25,7 +25,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from scripts.boot.defaults import DEFAULT_BOOT_FACTS, DEPRECATED_BOOT_FACTS
+from scripts.boot.defaults import (
+    DEFAULT_BOOT_FACTS,
+    DEPRECATED_BOOT_FACTS,
+    PERSONA_CORE_KEYS,
+)
 from scripts.db.connection import connect
 from scripts.shared.embedding import pack
 from scripts.shared.ollama import OllamaClient
@@ -191,6 +195,90 @@ def _migrate_facts_check_constraint(conn) -> bool:
         conn.execute("PRAGMA foreign_keys=ON")
 
 
+def _restore_persona_core_from_init(conn, client) -> int:
+    """PERSONA_CORE_KEYS が write LLM で汚染されていた場合、 source='init' の
+    最古 fact から復元する.
+
+    0.5.25 以前は persona/identity 等の核属性が write LLM 上書き保護対象外で、
+    雑談の発話が JSON 抽出で `persona/identity` 値として登録されると簡単に
+    上書きされてしまった (ソフィア事案で 14 段 supersede された identity を
+    観測). 0.5.26 の PROTECTED_KEYS 拡張で予防は塞がるが、 既存汚染は
+    自動修復する必要があるため本関数を追加.
+
+    手順:
+    - 各 PERSONA_CORE_KEY について active fact を取得
+    - 同 key で source='init' の最古 fact を取得
+    - active.value != init.value なら、 active を superseded に降格、
+      init.value で新規 INSERT (source='restore') + embedding 再生成
+    - source='init' の fact が存在しない (= 0.5.0 以前の seed 等) なら skip
+
+    idempotent: active がすでに init と一致していれば no-op.
+    戻り値: 復元した key 数.
+    """
+    restored = 0
+    for cat, key in PERSONA_CORE_KEYS:
+        active_row = conn.execute(
+            "SELECT id, value FROM facts "
+            "WHERE category=? AND key=? AND status='active'",
+            (cat, key),
+        ).fetchone()
+        if not active_row:
+            continue  # そもそも seed されていない key
+        init_row = conn.execute(
+            "SELECT id, value, importance FROM facts "
+            "WHERE category=? AND key=? AND source='init' "
+            "ORDER BY id ASC LIMIT 1",
+            (cat, key),
+        ).fetchone()
+        if not init_row:
+            continue  # init seed が無いペルソナ (0.5.0 以前等)
+        active_id, active_value = active_row
+        init_id, init_value, init_importance = init_row
+        if active_value == init_value:
+            continue  # 既に正しい値 (idempotent)
+
+        # 現 active を superseded に降格
+        conn.execute(
+            "UPDATE facts SET status='superseded', "
+            "  updated_at=datetime('now', '+9 hours') "
+            "WHERE id=?",
+            (active_id,),
+        )
+        # init value で新規 active を INSERT (source='restore' で由来を残す)
+        cur = conn.execute(
+            "INSERT INTO facts(category, key, value, importance, source, supersedes) "
+            "VALUES (?, ?, ?, ?, 'restore', ?)",
+            (cat, key, init_value, init_importance, active_id),
+        )
+        new_id = cur.lastrowid
+        conn.execute(
+            "UPDATE facts SET superseded_by=? WHERE id=?",
+            (new_id, active_id),
+        )
+        # 旧 embedding を削除して新 value で再生成
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='fact_embeddings'"
+        ).fetchone():
+            conn.execute("DELETE FROM fact_embeddings WHERE fact_id=?", (active_id,))
+            try:
+                vec = client.embed(EMBED_MODEL, f"{cat}/{key}: {init_value}")
+                if vec:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO fact_embeddings(fact_id, embedding) "
+                        "VALUES (?, ?)",
+                        (new_id, pack(vec)),
+                    )
+            except Exception as e:
+                print(
+                    f"  WARN restore embed failed [{cat}/{key}]: {e}",
+                    file=sys.stderr,
+                )
+        conn.commit()
+        restored += 1
+        print(f"  restored [{cat}/{key}] -> {init_value[:50]!r}")
+    return restored
+
+
 def _ensure_lint_tables(conn) -> bool:
     """v0.5.12 追加の conflicts / lint_log を既存 DB に migrate.
 
@@ -241,6 +329,7 @@ def upgrade(db_path: Path) -> dict[str, int]:
         "facts_re_embedded": 0, "superseded_purged": 0,
         "lint_tables_added": 0,
         "facts_check_migrated": 0,
+        "persona_core_restored": 0,
     }
     conn = connect(db_path)
     client = OllamaClient()
@@ -347,6 +436,14 @@ def upgrade(db_path: Path) -> dict[str, int]:
         if m > 0:
             print(f"  re-embedded {m} fact(s) with category/key/value format")
 
+        # 6. PERSONA_CORE_KEYS の汚染を init seed 値から復元
+        #    (0.5.25 以前で role / identity / address_user 等が write LLM に
+        #    上書きされてしまったペルソナを救済. 0.5.26 で予防 + 救済)
+        r = _restore_persona_core_from_init(conn, client)
+        counts["persona_core_restored"] = r
+        if r > 0:
+            print(f"  restored {r} persona-core fact(s) from init seed")
+
     finally:
         conn.close()
     return counts
@@ -387,7 +484,8 @@ def main() -> None:
         f"superseded_purged={counts['superseded_purged']}, "
         f"facts_re_embedded={counts['facts_re_embedded']}, "
         f"lint_tables_added={counts['lint_tables_added']}, "
-        f"facts_check_migrated={counts['facts_check_migrated']}"
+        f"facts_check_migrated={counts['facts_check_migrated']}, "
+        f"persona_core_restored={counts['persona_core_restored']}"
     )
 
 
