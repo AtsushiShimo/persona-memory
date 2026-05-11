@@ -112,15 +112,70 @@ def recall(
     if hits:
         bump_access_counts(conn, [h.fact_id for h in hits])
 
-    # 5. LLM で関連性 curate + 自然文要約 (仕様書 §5.5)
-    summary = summarize_recall(content, hits, episodes_hits, client, model=recall_model)
-    if not summary:
-        # LLM が「関係ある記憶なし」 と判断 → 何も注入しない
-        if debug_enabled():
-            log_final_prompt("")
-        return ""
+    # 5. mode 別の出力生成 (0.6.4 で 3 mode 切替可能に)
+    #    PERSONA_RECALL_MODE env で切替:
+    #      summarize    (default): ローカル LLM で関連性 curate + 自然文要約
+    #      index_titled         : fact_id + value 先頭 30 字のリスト, ローカル LLM 不使用
+    #      index_only           : fact_id のみのリスト, ローカル LLM 不使用
+    #    後 2 者は main agent (= 高性能 LLM) に curate を委ね、 ローカル LLM の
+    #    弁別力不足 (gemma3:12b) が curate ミスを引き起こす経路を構造的に断つ.
+    import os
+    mode = os.environ.get("PERSONA_RECALL_MODE", "summarize").strip().lower()
+    if mode not in ("summarize", "index_titled", "index_only"):
+        mode = "summarize"
 
-    additional_context = f"## 思い出した記憶\n{summary}"
+    if mode == "summarize":
+        summary = summarize_recall(content, hits, episodes_hits, client, model=recall_model)
+        if not summary:
+            if debug_enabled():
+                log_final_prompt("")
+            return ""
+        additional_context = f"## 思い出した記憶\n{summary}"
+    else:
+        # index_* mode: ローカル LLM 不使用. hit を素直にインデックス化.
+        additional_context = _format_index(hits, episodes_hits, mode=mode)
+        if not additional_context:
+            if debug_enabled():
+                log_final_prompt("")
+            return ""
+
     if debug_enabled():
         log_final_prompt(additional_context)
     return additional_context
+
+
+def _format_index(hits, episodes_hits, mode: str = "index_titled") -> str:
+    """ローカル LLM を通さず, hit を素直にインデックス化して main agent に渡す.
+
+    mode='index_titled': fact_id + value 先頭 30 字 (= タイトル). main agent は
+      タイトルから関連性を判断し、 詳細が要れば mcp__persona-memory__search_memory
+      を呼んで本文取得する.
+    mode='index_only': fact_id のみ. 本文ゼロで物理的に search 強制.
+
+    どちらも ローカル LLM の curate ミスが構造的にゼロ. token も大幅削減.
+    """
+    title_chars = 30
+    lines: list[str] = []
+    if hits:
+        lines.append("### 思い出しの手がかり (記憶)")
+        for h in hits:
+            if mode == "index_titled":
+                title = (h.value or "")[:title_chars]
+                lines.append(f"- #{h.fact_id} [{h.category}/{h.key}] {title}…")
+            else:  # index_only
+                lines.append(f"- #{h.fact_id}")
+    if episodes_hits:
+        lines.append("")
+        lines.append("### 思い出しの手がかり (会話履歴)")
+        for e in episodes_hits:
+            if mode == "index_titled":
+                title = (e.content or "")[:title_chars]
+                lines.append(f"- ep#{e.episode_id} [{e.timestamp}] {e.role}: {title}…")
+            else:
+                lines.append(f"- ep#{e.episode_id}")
+    if not lines:
+        return ""
+    note = (
+        "\n\n_詳細が必要なら mcp__persona-memory__search_memory で深掘りしてください_"
+    )
+    return "## 思い出した記憶\n" + "\n".join(lines) + note
