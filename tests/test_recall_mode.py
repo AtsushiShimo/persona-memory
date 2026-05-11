@@ -91,3 +91,97 @@ def test_index_titled_only_episodes_no_facts():
     out = _format_index([], eps, mode="index_titled")
     assert "会話履歴" in out
     assert "(記憶)" not in out  # fact セクションは出ない
+
+
+# ── 0.6.5 auto mode: 会話内容で動的判定 ─────────────────────────────────────
+
+def test_auto_mode_picks_index_titled_when_search_history_true(monkeypatch, tmp_path):
+    """過去参照系発話 (search_history=True) では auto → index_titled に切替.
+
+    full recall 呼出をモックして mode 解決のみを確認する.
+    """
+    from unittest.mock import patch, MagicMock
+    from scripts.recall import run as run_module
+    from scripts.db.connection import connect
+    from scripts.db.migrate import init_db
+
+    db_path = tmp_path / "p.db"
+    init_db(db_path)
+    conn = connect(db_path)
+    try:
+        # 過去参照を判定させる
+        with patch("scripts.recall.run.analyze_query") as MAQ, \
+             patch("scripts.recall.run._format_index") as MFI:
+            MAQ.return_value = MagicMock(search_history=True, keywords=["x"])
+            MFI.return_value = "## 思い出した記憶\n- #1 fake"
+            client = MagicMock()
+            client.embed.return_value = [0.1] * 768
+            with patch("scripts.recall.run.search", return_value=[MagicMock(fact_id=1)]):
+                with patch("scripts.recall.run.search_episodes_by_embeddings", return_value=[]):
+                    with patch("scripts.recall.run.search_episodes_by_fts", return_value=[]):
+                        with patch("scripts.recall.run.bump_access_counts"):
+                            monkeypatch.delenv("PERSONA_RECALL_MODE", raising=False)
+                            run_module.recall(conn, "renju の議論どこまで覚えてる?", client)
+            # _format_index が呼ばれ、 mode='index_titled' で呼ばれた
+            args, kwargs = MFI.call_args
+            assert kwargs.get("mode") == "index_titled"
+    finally:
+        conn.close()
+
+
+def test_auto_mode_uses_summarize_when_search_history_false(monkeypatch, tmp_path):
+    """新規話題 (search_history=False) では auto → summarize."""
+    from unittest.mock import patch, MagicMock
+    from scripts.recall import run as run_module
+    from scripts.db.connection import connect
+    from scripts.db.migrate import init_db
+
+    db_path = tmp_path / "p.db"
+    init_db(db_path)
+    conn = connect(db_path)
+    try:
+        with patch("scripts.recall.run.analyze_query") as MAQ, \
+             patch("scripts.recall.run.summarize_recall") as MSR:
+            MAQ.return_value = MagicMock(search_history=False, keywords=[])
+            MSR.return_value = "summarized content"
+            client = MagicMock()
+            client.embed.return_value = [0.1] * 768
+            with patch("scripts.recall.run.search", return_value=[MagicMock(fact_id=1)]):
+                with patch("scripts.recall.run.search_episodes_by_embeddings", return_value=[]):
+                    with patch("scripts.recall.run.search_episodes_by_fts", return_value=[]):
+                        with patch("scripts.recall.run.bump_access_counts"):
+                            monkeypatch.delenv("PERSONA_RECALL_MODE", raising=False)
+                            out = run_module.recall(conn, "今日の天気は？", client)
+            MSR.assert_called_once()
+            assert "summarized content" in out
+    finally:
+        conn.close()
+
+
+def test_explicit_env_overrides_auto(monkeypatch, tmp_path):
+    """PERSONA_RECALL_MODE=summarize を明示すると、 search_history=True でも summarize."""
+    from unittest.mock import patch, MagicMock
+    from scripts.recall import run as run_module
+    from scripts.db.connection import connect
+    from scripts.db.migrate import init_db
+
+    db_path = tmp_path / "p.db"
+    init_db(db_path)
+    conn = connect(db_path)
+    try:
+        with patch("scripts.recall.run.analyze_query") as MAQ, \
+             patch("scripts.recall.run.summarize_recall") as MSR:
+            MAQ.return_value = MagicMock(search_history=True, keywords=["x"])
+            MSR.return_value = "forced summary"
+            client = MagicMock()
+            client.embed.return_value = [0.1] * 768
+            with patch("scripts.recall.run.search", return_value=[MagicMock(fact_id=1)]):
+                with patch("scripts.recall.run.search_episodes_by_embeddings", return_value=[]):
+                    with patch("scripts.recall.run.search_episodes_by_fts", return_value=[]):
+                        with patch("scripts.recall.run.bump_access_counts"):
+                            monkeypatch.setenv("PERSONA_RECALL_MODE", "summarize")
+                            out = run_module.recall(conn, "renju 直近どこまで?", client)
+            MSR.assert_called_once()
+            assert "forced summary" in out
+    finally:
+        conn.close()

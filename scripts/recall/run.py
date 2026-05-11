@@ -112,17 +112,21 @@ def recall(
     if hits:
         bump_access_counts(conn, [h.fact_id for h in hits])
 
-    # 5. mode 別の出力生成 (0.6.4 で 3 mode 切替可能に)
+    # 5. mode 別の出力生成 (0.6.5 で auto 判定を default 化)
     #    PERSONA_RECALL_MODE env で切替:
-    #      summarize    (default): ローカル LLM で関連性 curate + 自然文要約
-    #      index_titled         : fact_id + value 先頭 30 字のリスト, ローカル LLM 不使用
-    #      index_only           : fact_id のみのリスト, ローカル LLM 不使用
-    #    後 2 者は main agent (= 高性能 LLM) に curate を委ね、 ローカル LLM の
-    #    弁別力不足 (gemma3:12b) が curate ミスを引き起こす経路を構造的に断つ.
-    import os
-    mode = os.environ.get("PERSONA_RECALL_MODE", "summarize").strip().lower()
-    if mode not in ("summarize", "index_titled", "index_only"):
-        mode = "summarize"
+    #      auto         (default): 会話内容で動的判定. analysis.search_history が
+    #                              True (= 過去参照系発話) なら index_titled,
+    #                              False (= 雑談・新規話題) なら summarize.
+    #      summarize             : 常に ローカル LLM で curate + 自然文要約
+    #      index_titled          : 常に fact_id + value 先頭 30 字
+    #      index_only            : 常に fact_id のみ (本文ゼロ, main agent に search 強制)
+    #    auto は「過去参照では curate ミスを避けて main agent に手がかりを渡す、
+    #    新規話題ではローカル curate で軽量に流す」 の動的切り替え.
+    mode = os.environ.get("PERSONA_RECALL_MODE", "auto").strip().lower()
+    if mode not in ("auto", "summarize", "index_titled", "index_only"):
+        mode = "auto"
+    if mode == "auto":
+        mode = "index_titled" if analysis.search_history else "summarize"
 
     if mode == "summarize":
         summary = summarize_recall(content, hits, episodes_hits, client, model=recall_model)
