@@ -125,8 +125,8 @@ fi
 - **question**: "ペルソナはあなたをどう呼ぶか"
 - **multiSelect**: false
 - **options**:
-  1. label: `〜さん (敬称)` / description: "礼儀正しい汎用的な呼び方"
-  2. label: `あなた` / description: "中性、フォーマル寄り"
+  1. label: `あなた` / description: "中性、フォーマル寄り。名前を呼ばない (固有名詞捏造を防げる安全側)"
+  2. label: `ユーザーさん` / description: "敬称付きの汎用的な呼び方 (名前は知らない前提)"
   3. label: `君` / description: "親しみと、やや上からの距離感"
   4. label: `マスター` / description: "主従関係を演出する特殊な呼び方"
 

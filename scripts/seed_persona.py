@@ -104,6 +104,25 @@ def _parse_stance_csv(s: str) -> list[int]:
     return out
 
 
+def _normalize_address_user(raw: str) -> str:
+    """address_user 入力を正規化し、 LLM が name slot を捏造する誘惑を断つ.
+
+    placeholder 風 (`〜` を含む or `(敬称)` を含む) の入力は、 LLM に
+    「ここに名前を補え」 と解釈させる name slot として機能してしまう
+    (実機検証で `simo さん` 等の捏造を観測). 正規化方針:
+    - `〜さん (敬称)` のように `〜` を含むものは
+      「『あなた』 (固有名詞は使わず汎用代名詞)」 に展開
+    - `(敬称)` 等の補注は剥がす
+    - 既に固有な呼称 (「マスター」「あなた」「君」「ユーザーさん」 等) はそのまま
+    """
+    s = raw.strip()
+    if "〜" in s or "～" in s:
+        return "『あなた』 (ユーザーの名前は知らないので呼ばない. 固有名詞でユーザーを呼びかけないこと)"
+    if s.endswith(" (敬称)"):
+        s = s[: -len(" (敬称)")].strip()
+    return s
+
+
 def _upsert_boot_fact(conn, category: str, key: str, value: str, importance: int) -> int:
     """boot 層 (persona / rule) に upsert (UNIQUE(category,key) WHERE active を使う)。"""
     row = conn.execute(
@@ -147,7 +166,7 @@ def seed(
         ("persona", "gender", f"性別: {gender}", 8),
         ("persona", "first_person", f"一人称は『{first_person}』", 8),
         ("persona", "speech_style", speech_style, 8),
-        ("persona", "address_user", address_user, 8),
+        ("persona", "address_user", _normalize_address_user(address_user), 8),
     ]
     if stance is not None and len(stance) == len(STANCE_AXES):
         user_facts.append(("persona", "stance", _stance_to_natural_language(stance), 9))

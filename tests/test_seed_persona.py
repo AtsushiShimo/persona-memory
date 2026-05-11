@@ -8,7 +8,7 @@ import pytest
 
 from scripts.db.connection import connect
 from scripts.db.migrate import init_db
-from scripts.seed_persona import seed
+from scripts.seed_persona import _normalize_address_user, seed
 
 
 @pytest.fixture
@@ -260,3 +260,44 @@ def test_parse_stance_csv_validates_format():
         _parse_stance_csv("0,1,-3,2,-1")
     with pytest.raises(ValueError, match=r"-2\.\.\+2"):
         _parse_stance_csv("0,1,1,2,3")
+
+
+# ── address_user 正規化 (LLM の name slot 捏造誘発を防ぐ) ─────────────────
+
+def test_normalize_address_user_strips_placeholder_tilde():
+    """`〜さん (敬称)` のような placeholder は『あなた』 系へ展開される."""
+    out = _normalize_address_user("〜さん (敬称)")
+    assert "〜" not in out
+    assert "あなた" in out
+    # 全角チルダ ～ も同様
+    out_full = _normalize_address_user("～さん")
+    assert "〜" not in out_full and "～" not in out_full
+    assert "あなた" in out_full
+
+
+def test_normalize_address_user_strips_suffix_label():
+    """末尾の ` (敬称)` 補注は剥がす (placeholder 化を防ぐ)."""
+    assert _normalize_address_user("マスター (敬称)") == "マスター"
+
+
+def test_normalize_address_user_passes_concrete_values():
+    """具体的な呼称はそのまま (副作用を起こさない)."""
+    for s in ("マスター", "あなた", "君", "ユーザーさん"):
+        assert _normalize_address_user(s) == s
+
+
+def test_seed_stores_normalized_address_user(db_path: Path):
+    """placeholder で seed → DB には正規化された value が入る."""
+    with patch("scripts.seed_persona.OllamaClient") as Mock:
+        Mock.return_value.embed.return_value = []
+        seed(db_path, **{**_seed_kwargs(), "address_user": "〜さん (敬称)"})
+
+    conn = connect(db_path)
+    try:
+        v = conn.execute(
+            "SELECT value FROM facts WHERE category='persona' AND key='address_user' AND status='active'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert "〜" not in v
+    assert "あなた" in v
