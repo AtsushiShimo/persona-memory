@@ -112,6 +112,12 @@ _PROMPT_TEMPLATE = """\
 (f) **状況依存のノウハウ / 教訓** (= 条件付き行動指針) → `persona` カテゴリ +
    key 先頭に `playbook_` (詳細は下の「playbook 抽出ルール」 参照)
 
+**user / assistant どちらの発話からでも抽出する**: アシスタントの応答内で
+合意・採用案・結論・実装方針が明示された場合も同様に context fact 化する.
+ただし「アシスタントの推測 / 仮説 / 提案段階」 は除外 — 確定 signal
+(ユーザーの「OK」「採用」 等 or アシスタント自身の「〜で確定です」「決定」 等
+明確な確定表現) を伴うもののみ抽出.
+
 ## playbook 抽出ルール (条件付きノウハウ)
 
 ユーザーが **「次回似た状況ではこう動いてほしい」** と教えた / ユーザーの
@@ -165,10 +171,27 @@ _PROMPT_TEMPLATE = """\
 - 「保留」「却下」「廃案」 等で明示的に外した項目
 - 議論を経て合意された方針・優先順位・採用機能・採用しない機能
 
-key 命名例:
-- `phase1_scope` value="Phase 1 (MVP) は X / Y / Z を含む。W は Phase 2 へ"
-- `feature_X_decision` value="機能 X は採用、Y は廃案"
-- `priority_order` value="実装優先度: A > B > C で確定"
+**value 冒頭に議論の主題語を必ず含める** (検索ヒット率を物理的に上げるため):
+- ✅ value="**Renju の UI**: デフォルトカテゴリ名は「全体」、 デフォルトトピック名は「全体トピック」 で確定"
+- ❌ value="デフォルトカテゴリ名は「全体」"   ← 「Renju」 で検索しても主題が無く hit 困難
+- ✅ value="**Phase 1 (MVP)**: X / Y / Z を含む、 W は Phase 2 へ"
+- ❌ value="X / Y / Z を含む"                  ← 何の Phase の話か不明
+
+主題語が直近会話に明示されていれば必ず冒頭に置く. プロジェクト名 / 機能名 /
+固有名詞 / ジャンル名のいずれか. これにより全文検索 (FTS5) でもベクター検索
+でも確実に hit する.
+
+**1 決定 = 1 fact が原則**。 複数論点が同時に確定したら **論点ごとに別 fact** に分けて出す:
+- ✅ 「カテゴリ命名 = 全体、 トピック命名 = 全体トピック、 削除不可・リネーム可」 →
+  3 fact (`renju_default_category_name`, `renju_default_topic_name`,
+  `renju_default_category_topic_mutability`) に分割
+- ❌ 1 fact で全部詰め込む (= 後で個別更新できず、 supersede で全部失う)
+
+key 命名例 (主題 prefix + 属性):
+- `renju_default_category_name`  value="Renju の UI: デフォルトカテゴリ名は「全体」 で確定"
+- `phase1_scope`                  value="Phase 1 (MVP): X / Y / Z を含む、 W は Phase 2 へ"
+- `feature_X_decision`            value="機能 X は採用、 Y は廃案 (議論主題: Z プロジェクトの UI 仕様)"
+- `priority_order`                value="実装優先度: A > B > C で確定 (議論主題: バックエンド refactor)"
 
 決定の根拠が直近会話バッファに無い (= 文脈不足) なら抽出しない。
 推測ではなく **確定の signal** が直前 1-2 ターンで明示されているもののみ。
