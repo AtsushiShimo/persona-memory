@@ -238,27 +238,39 @@ def search_episodes_by_fts(
     queries: list[str],
     limit: int = EPISODE_LIKE_LIMIT,
 ) -> list[RecalledEpisode]:
-    """FTS5 (trigram + BM25) で episodes を全文検索 (0.6.0 phase3 で追加).
+    """FTS5 (trigram + BM25) で episodes を全文検索 (0.6.0 phase3 で追加,
+    0.6.2 で recency 補正を追加).
 
     vec0 cosine の弱点 (nomic-embed-text の弁別力限界: 短文 / 固有名詞 /
     typo に弱い) を補う補完経路. trigram tokenizer なので日本語の連続文
     にも単語境界不要で効く. `Renju` / `Reiju` のような固有名詞は確実に
     hit する.
 
+    **2 経路 union + recency 優先 sort** (0.6.2):
+    - 経路 A: BM25 ランク top N (= 古くても語彙的に最も合致したもの)
+    - 経路 B: 同 MATCH 内で timestamp DESC top N (= 新しい関連 hit)
+    両者 union, 重複 (content, role) dedup, 最終的に **timestamp DESC** で
+    並べる. これで「renju」 のような頻出 keyword で古い議論が上位を埋めても,
+    直近の議論が確実に top に残る (ソフィア事案: 17:20 デフォルトカテゴリ
+    決定が 5/8 ドメイン議論に押し出される回帰を防ぐ).
+
     episodes_fts テーブルが無い古い DB では空配列を返す (= upgrade 未実行
     の DB でも recall 自体は動き続ける).
     """
     if not queries:
         return []
+    # (content, role) で dedup. value: (id, role, content, ts, rank)
     seen: dict[tuple[str, str], tuple[int, str, str, str, float]] = {}
+    # 各経路の取得件数. union 後に limit でカットするので余裕を持って取る.
+    per_path_limit = max(limit, 8)
     for q in queries:
         q = (q or "").strip()
         if not q:
             continue
-        # FTS5 構文: phrase query にして記号 / 数値 / 日英混在に対応
         fts_q = '"' + q.replace('"', '""') + '"'
         try:
-            rows = conn.execute(
+            # 経路 A: BM25 関連性 top
+            rows_bm25 = conn.execute(
                 """
                 SELECT e.id, e.role, e.content, e.timestamp,
                        bm25(episodes_fts) AS rank
@@ -268,18 +280,37 @@ def search_episodes_by_fts(
                 ORDER BY rank
                 LIMIT ?
                 """,
-                (fts_q, limit),
+                (fts_q, per_path_limit),
+            ).fetchall()
+            # 経路 B: 同じ MATCH 内で timestamp 降順 top (recency 補正)
+            rows_recent = conn.execute(
+                """
+                SELECT e.id, e.role, e.content, e.timestamp,
+                       bm25(episodes_fts) AS rank
+                FROM episodes_fts
+                JOIN episodes e ON e.id = episodes_fts.rowid
+                WHERE episodes_fts MATCH ?
+                ORDER BY e.timestamp DESC
+                LIMIT ?
+                """,
+                (fts_q, per_path_limit),
             ).fetchall()
         except sqlite3.OperationalError:
-            # FTS5 仮想テーブルが無い古い DB は安全に skip
             return []
-        for r in rows:
+        for r in rows_bm25 + rows_recent:
             eid, role, content, ts, rank = r
             k = (content, role)
             if k not in seen or rank < seen[k][4]:
                 seen[k] = (eid, role, content, ts, rank)
+    # 最終 sort: timestamp 降順 (= 直近関連 hit を確実に上位に).
+    # 同 timestamp は BM25 rank 昇順 (= 関連性高い方を優先).
+    ranked = sorted(
+        seen.values(),
+        key=lambda x: (x[3] or "", -x[4]),  # ts desc, rank asc (rank は小さいほど良)
+        reverse=True,
+    )
     out: list[RecalledEpisode] = []
-    for eid, role, content, ts, _rank in sorted(seen.values(), key=lambda x: x[4]):
+    for eid, role, content, ts, _rank in ranked[:limit]:
         prev = content
         if EPISODE_CONTENT_PREVIEW > 0 and prev and len(prev) > EPISODE_CONTENT_PREVIEW:
             prev = prev[:EPISODE_CONTENT_PREVIEW] + "…"

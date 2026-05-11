@@ -153,3 +153,60 @@ def test_fts_returns_empty_when_fts_table_missing(tmp_path: Path):
     finally:
         conn.close()
     assert hits == []
+
+
+# ── 0.6.2 recency 補正 (ソフィア事案: 直近議論が古い hit に押し出される回帰) ─
+
+def test_fts_recency_correction_keeps_recent_renju_episode(db_path: Path):
+    """同 keyword で hit が多い時、 直近 episode が古い hit に押し出されない.
+
+    ソフィア事案を再現: 「renju」 keyword で 5/8 (古い renju ドメイン議論) と
+    5/11 17:20 (直近の合意決定) の両方が hit する状況で、 直近側が top に
+    残ることを保証する.
+    """
+    import time
+    conn = connect(db_path)
+    try:
+        # 古い renju 議論を 8 件 (renju keyword 頻出)
+        for i in range(8):
+            conn.execute(
+                "INSERT INTO episodes(role, content, session_id, timestamp) "
+                "VALUES (?, ?, 's_old', ?)",
+                ("user", f"Renju のドメイン候補 #{i} renju.io renju.dev", "2026-05-08 14:00:00"),
+            )
+        # 直近の合意決定 1 件 (renju の主題が薄め)
+        conn.execute(
+            "INSERT INTO episodes(role, content, session_id, timestamp) "
+            "VALUES ('user', ?, 's_new', '2026-05-11 17:20:00')",
+            ("Renju の UI でデフォルトカテゴリは「全体」 で合意、 A 案採用",),
+        )
+        conn.commit()
+        hits = search_episodes_by_fts(conn, ["Renju"], limit=5)
+    finally:
+        conn.close()
+    # 直近 (2026-05-11) のものが top 5 に含まれる
+    timestamps = [h.timestamp for h in hits]
+    assert any("2026-05-11" in (ts or "") for ts in timestamps), (
+        f"直近の議論が top 5 に残らなかった: {timestamps}"
+    )
+    # 1 件目 (top) は直近のはず
+    assert "2026-05-11" in (hits[0].timestamp or ""), (
+        f"直近が top に来なかった: {hits[0].timestamp} / {hits[0].content[:40]}"
+    )
+
+
+def test_fts_ordering_is_timestamp_desc(db_path: Path):
+    """戻り順は timestamp DESC (新しいものから)."""
+    conn = connect(db_path)
+    try:
+        conn.execute("INSERT INTO episodes(role, content, session_id, timestamp) VALUES ('user', 'Renju 古い', 's', '2026-05-01 10:00:00')")
+        conn.execute("INSERT INTO episodes(role, content, session_id, timestamp) VALUES ('user', 'Renju 中間', 's', '2026-05-05 10:00:00')")
+        conn.execute("INSERT INTO episodes(role, content, session_id, timestamp) VALUES ('user', 'Renju 新しい', 's', '2026-05-11 10:00:00')")
+        conn.commit()
+        hits = search_episodes_by_fts(conn, ["Renju"], limit=10)
+    finally:
+        conn.close()
+    assert len(hits) == 3
+    assert "新しい" in hits[0].content
+    assert "中間" in hits[1].content
+    assert "古い" in hits[2].content
