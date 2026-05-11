@@ -16,12 +16,21 @@ class EmbeddingError(RuntimeError):
     pass
 
 
+# nomic-embed-text のコンテキスト窓 (~2048 token) を超えると Ollama が
+# 500 を返す. scripts/shared/embedding.py の同 constant に合わせる
+# (server から scripts は import せず, 重複定義で疎結合を保つ).
+EMBED_TEXT_MAX_CHARS = 3000
+
+
 async def embed_text(text: str) -> list[float]:
+    safe = "" if not text else text[:EMBED_TEXT_MAX_CHARS]
+    if not safe:
+        raise EmbeddingError("embed_text received empty text")
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             r = await client.post(
                 f"{OLLAMA_HOST}/api/embeddings",
-                json={"model": EMBED_MODEL, "prompt": text},
+                json={"model": EMBED_MODEL, "prompt": safe},
             )
             r.raise_for_status()
         except httpx.HTTPError as e:

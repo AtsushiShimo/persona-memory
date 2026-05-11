@@ -38,9 +38,16 @@ class OllamaClient:
         return (r.json().get("response") or "").strip()
 
     def embed(self, model: str, text: str) -> list[float]:
+        # nomic-embed-text 等のコンテキスト窓超過 (~2048 token) で 500 が返る
+        # 事故を防ぐため、 入力テキストを安全長に切り詰めてから投げる.
+        # raw 側は呼出元で無傷に保存される.
+        from scripts.shared.embedding import truncate_for_embedding
+        safe = truncate_for_embedding(text)
+        if not safe:
+            return []
         r = httpx.post(
             f"{self.host}/api/embeddings",
-            json={"model": model, "prompt": text},
+            json={"model": model, "prompt": safe},
             timeout=self.timeout,
         )
         r.raise_for_status()
