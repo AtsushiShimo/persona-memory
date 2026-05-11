@@ -23,6 +23,7 @@ from scripts.recall.search import (
     bump_access_counts,
     search,
     search_episodes_by_embeddings,
+    search_episodes_by_fts,
 )
 from scripts.recall.summarize import summarize_recall
 from scripts.shared.ollama import LLMClient
@@ -88,10 +89,20 @@ def recall(
         ])
 
     # 4. episodes 検索 (LLM が「履歴参照」 と判断したとき)
-    #    facts と同じく vec0 ベクトル検索で意味的に近い episode を引く
+    #    0.6.0 phase3 ハイブリッド: vec0 cosine (意味的近さ) + FTS5 BM25
+    #    (短文 / 固有名詞 / typo の確実な hit) を union して
+    #    nomic-embed-text の弁別力限界を物理的に塞ぐ.
     episodes_hits = []
     if analysis.search_history:
-        episodes_hits = search_episodes_by_embeddings(conn, embeddings)
+        vec_hits = search_episodes_by_embeddings(conn, embeddings)
+        fts_hits = search_episodes_by_fts(conn, analysis.keywords or [])
+        # union & dedup (episode_id ベース). vec hit を先に並べて FTS で補強
+        seen_ids: set[int] = set()
+        for h in vec_hits + fts_hits:
+            if h.episode_id in seen_ids:
+                continue
+            seen_ids.add(h.episode_id)
+            episodes_hits.append(h)
 
     if not hits and not episodes_hits:
         if debug_enabled():

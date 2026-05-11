@@ -233,6 +233,62 @@ def search_episodes_by_keywords(
     return out
 
 
+def search_episodes_by_fts(
+    conn: sqlite3.Connection,
+    queries: list[str],
+    limit: int = EPISODE_LIKE_LIMIT,
+) -> list[RecalledEpisode]:
+    """FTS5 (trigram + BM25) で episodes を全文検索 (0.6.0 phase3 で追加).
+
+    vec0 cosine の弱点 (nomic-embed-text の弁別力限界: 短文 / 固有名詞 /
+    typo に弱い) を補う補完経路. trigram tokenizer なので日本語の連続文
+    にも単語境界不要で効く. `Renju` / `Reiju` のような固有名詞は確実に
+    hit する.
+
+    episodes_fts テーブルが無い古い DB では空配列を返す (= upgrade 未実行
+    の DB でも recall 自体は動き続ける).
+    """
+    if not queries:
+        return []
+    seen: dict[tuple[str, str], tuple[int, str, str, str, float]] = {}
+    for q in queries:
+        q = (q or "").strip()
+        if not q:
+            continue
+        # FTS5 構文: phrase query にして記号 / 数値 / 日英混在に対応
+        fts_q = '"' + q.replace('"', '""') + '"'
+        try:
+            rows = conn.execute(
+                """
+                SELECT e.id, e.role, e.content, e.timestamp,
+                       bm25(episodes_fts) AS rank
+                FROM episodes_fts
+                JOIN episodes e ON e.id = episodes_fts.rowid
+                WHERE episodes_fts MATCH ?
+                ORDER BY rank
+                LIMIT ?
+                """,
+                (fts_q, limit),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # FTS5 仮想テーブルが無い古い DB は安全に skip
+            return []
+        for r in rows:
+            eid, role, content, ts, rank = r
+            k = (content, role)
+            if k not in seen or rank < seen[k][4]:
+                seen[k] = (eid, role, content, ts, rank)
+    out: list[RecalledEpisode] = []
+    for eid, role, content, ts, _rank in sorted(seen.values(), key=lambda x: x[4]):
+        prev = content
+        if EPISODE_CONTENT_PREVIEW > 0 and prev and len(prev) > EPISODE_CONTENT_PREVIEW:
+            prev = prev[:EPISODE_CONTENT_PREVIEW] + "…"
+        out.append(RecalledEpisode(
+            episode_id=eid, role=role, content=prev, timestamp=ts,
+        ))
+    return out
+
+
 def _search_episodes_one(
     conn: sqlite3.Connection,
     embedding: list[float],

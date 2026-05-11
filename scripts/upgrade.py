@@ -279,6 +279,53 @@ def _restore_persona_core_from_init(conn, client) -> int:
     return restored
 
 
+def _ensure_episodes_fts(conn) -> bool:
+    """既存 DB に episodes_fts (FTS5 trigram) + 同期 trigger を追加 (0.6.0 phase3).
+
+    vec0 cosine の弱点 (短文 / 固有名詞 / typo) を BM25 で補うための
+    補完検索経路. 新規 DB は schema.sql で作成済み. ここでは既存 DB に
+    後追いで作って既存 episodes 全件を populate する. idempotent.
+
+    戻り値: 実際に新規作成した場合 True.
+    """
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name='episodes_fts'"
+    ).fetchone()
+    if exists:
+        return False
+    # episodes 本体テーブルが無い (= ほぼあり得ないが念のため) なら何もしない
+    if not conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name='episodes'"
+    ).fetchone():
+        return False
+    conn.executescript(
+        """
+        CREATE VIRTUAL TABLE episodes_fts USING fts5(
+          content,
+          content='episodes',
+          content_rowid='id',
+          tokenize='trigram'
+        );
+        CREATE TRIGGER episodes_ai AFTER INSERT ON episodes BEGIN
+          INSERT INTO episodes_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+        CREATE TRIGGER episodes_ad AFTER DELETE ON episodes BEGIN
+          INSERT INTO episodes_fts(episodes_fts, rowid, content)
+            VALUES('delete', old.id, old.content);
+        END;
+        CREATE TRIGGER episodes_au AFTER UPDATE ON episodes BEGIN
+          INSERT INTO episodes_fts(episodes_fts, rowid, content)
+            VALUES('delete', old.id, old.content);
+          INSERT INTO episodes_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+        """
+    )
+    # 既存 episodes を一括 populate
+    conn.execute("INSERT INTO episodes_fts(episodes_fts) VALUES('rebuild')")
+    conn.commit()
+    return True
+
+
 def _ensure_lint_tables(conn) -> bool:
     """v0.5.12 追加の conflicts / lint_log を既存 DB に migrate.
 
@@ -330,6 +377,7 @@ def upgrade(db_path: Path) -> dict[str, int]:
         "lint_tables_added": 0,
         "facts_check_migrated": 0,
         "persona_core_restored": 0,
+        "episodes_fts_built": 0,
     }
     conn = connect(db_path)
     client = OllamaClient()
@@ -337,6 +385,10 @@ def upgrade(db_path: Path) -> dict[str, int]:
         if _migrate_facts_check_constraint(conn):
             counts["facts_check_migrated"] = 1
             print("  migrated facts CHECK constraint (added 'knowledge' category)")
+        if _ensure_episodes_fts(conn):
+            counts["episodes_fts_built"] = 1
+            n_pop = conn.execute("SELECT COUNT(*) FROM episodes_fts").fetchone()[0]
+            print(f"  built episodes_fts (FTS5 trigram), populated {n_pop} rows")
         if _ensure_lint_tables(conn):
             counts["lint_tables_added"] = 1
             print("  added lint tables (conflicts, lint_log)")
@@ -485,7 +537,8 @@ def main() -> None:
         f"facts_re_embedded={counts['facts_re_embedded']}, "
         f"lint_tables_added={counts['lint_tables_added']}, "
         f"facts_check_migrated={counts['facts_check_migrated']}, "
-        f"persona_core_restored={counts['persona_core_restored']}"
+        f"persona_core_restored={counts['persona_core_restored']}, "
+        f"episodes_fts_built={counts['episodes_fts_built']}"
     )
 
 
