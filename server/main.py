@@ -136,12 +136,15 @@ async def search_memory(
     query: str,
     top_k: int = 5,
     category: str | None = None,
-    include_episodes: bool = False,
+    include_episodes: bool = True,
 ) -> dict[str, Any]:
-    """Vector search over facts (optionally also episodes).
+    """Vector search over facts and (by default) episodes.
 
-    Returns the top_k nearest facts to the query. If include_episodes is True,
-    also returns matching episode summaries.
+    Returns the top_k nearest facts to the query. If include_episodes is True
+    (default since 0.5.29), also returns matching episode summaries — this is
+    the normal case for the main agent recalling past discussion content, e.g.
+    'what did we decide last session?'. Set False only when you specifically
+    want curated facts and not raw conversation log.
     """
     try:
         vec = await embed_text(query)
