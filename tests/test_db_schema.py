@@ -66,6 +66,41 @@ def test_facts_unique_active_constraint(db: sqlite3.Connection):
     assert counts_dict["superseded"] == 2
 
 
+def test_upsert_fact_via_server_db(tmp_path: Path, monkeypatch):
+    """MCP `write_fact` 経由 (server/db.upsert_fact) の ON CONFLICT が
+    partial unique index と整合することを担保する回帰テスト。
+    過去に `ON CONFLICT(category, key)` だけだと partial index にマッチせず
+    OperationalError で落ちた."""
+    db_path = tmp_path / "upsert.db"
+    init_db(db_path)
+    monkeypatch.setenv("PERSONA_MEMORY_DB", str(db_path))
+    monkeypatch.setenv("PERSONA_MEMORY_DEBUG", "1")
+    from server import db as server_db
+
+    fid1 = server_db.upsert_fact(
+        category="preference", key="coffee", value="dark roast",
+        importance=6, source="t1",
+    )
+    fid2 = server_db.upsert_fact(
+        category="preference", key="coffee", value="light roast",
+        importance=7, source="t2",
+    )
+    assert fid1 == fid2, "same (category, key) should UPDATE, not INSERT"
+
+    conn = connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT value, importance, source FROM facts "
+            "WHERE category='preference' AND key='coffee'"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["value"] == "light roast"
+        assert rows[0]["importance"] == 7
+    finally:
+        conn.close()
+
+
 def test_facts_category_check(db: sqlite3.Connection):
     # 'unknown' は CHECK 制約に含まれないので必ず弾かれる.
     # ('knowledge' は 0.5.25 以降 valid なので、 invalid 例には使えない).

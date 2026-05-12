@@ -97,11 +97,10 @@ def upsert_fact(
             """
             INSERT INTO facts(category, key, value, importance, source, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, datetime('now', '+9 hours'), datetime('now', '+9 hours'))
-            ON CONFLICT(category, key) DO UPDATE SET
+            ON CONFLICT(category, key) WHERE status = 'active' DO UPDATE SET
                 value = excluded.value,
                 importance = excluded.importance,
                 source = excluded.source,
-                status = 'active',
                 updated_at = datetime('now', '+9 hours')
             RETURNING id
             """,
