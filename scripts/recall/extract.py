@@ -27,6 +27,7 @@ RECALL_MODEL = os.environ.get(
 class QueryAnalysis:
     keywords: list[str]
     search_history: bool  # 過去会話ログを引くべきか (LLM が判断)
+    trigger_phrase: str | None = None  # 過去参照時、何への参照かを 1 phrase で (想起トリガー学習用, 0.6.12)
 
 
 _PROMPT_TEMPLATE = """\
@@ -43,6 +44,10 @@ _PROMPT_TEMPLATE = """\
      例: 「さっき何話した?」「以前の議論」「前にも言ったけど」「この前の話」「あれ覚えてる?」
    - false: 一般的な質問・新しい話題・指示・フィードバック
    - **会話ログ参照の意図を LLM として判断する** (regex 検出ではない)
+3. 過去参照の場合 (search_history=true)、参照対象を 1 つの短い phrase で抽出 (trigger_phrase)
+   - 例: 「Phase 1 の決定どうだっけ?」 → "Phase 1 の決定"
+   - 例: 「前に話した株ロボの話」 → "株ロボの話"
+   - 抽出できないなら null。search_history=false の時も null
 
 直近の会話:
 {buffer}
@@ -51,7 +56,7 @@ _PROMPT_TEMPLATE = """\
 {content}
 
 出力は JSON のみ (説明・前置き・コードフェンス禁止):
-{{"keywords": ["..."], "search_history": true|false}}
+{{"keywords": ["..."], "search_history": true|false, "trigger_phrase": "..."|null}}
 """
 
 
@@ -66,7 +71,7 @@ def build_prompt(content: str, buffer: list[dict]) -> str:
 
 def parse_analysis(text: str) -> QueryAnalysis:
     """LLM 出力 (期待: JSON object) を QueryAnalysis に変換. パース失敗 → 空."""
-    empty = QueryAnalysis(keywords=[], search_history=False)
+    empty = QueryAnalysis(keywords=[], search_history=False, trigger_phrase=None)
     if not text:
         return empty
     cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.MULTILINE)
@@ -88,7 +93,15 @@ def parse_analysis(text: str) -> QueryAnalysis:
         if isinstance(k, (str, int, float)) and str(k).strip()
     ]
     search_history = bool(data.get("search_history", False))
-    return QueryAnalysis(keywords=keywords, search_history=search_history)
+    raw_phrase = data.get("trigger_phrase")
+    trigger_phrase: str | None = None
+    if isinstance(raw_phrase, str):
+        s = raw_phrase.strip()
+        if s and s.lower() != "null":
+            trigger_phrase = s
+    return QueryAnalysis(
+        keywords=keywords, search_history=search_history, trigger_phrase=trigger_phrase,
+    )
 
 
 def analyze_query(
@@ -110,7 +123,7 @@ def analyze_query(
     except Exception:
         if _debug_enabled():
             log_extract_response("(generate failed)")
-        return QueryAnalysis(keywords=[], search_history=False)
+        return QueryAnalysis(keywords=[], search_history=False, trigger_phrase=None)
     if _debug_enabled():
         log_extract_response(response)
     return parse_analysis(response)

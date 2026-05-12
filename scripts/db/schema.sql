@@ -110,3 +110,22 @@ CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- ── 0.6.12 想起トリガー学習 (Recall Trigger Learning) ─────────────────────
+-- ユーザーが「前に話した X」「あの〜」 等の再参照表現を投げた瞬間の
+-- (query, hit fact_ids/episode_ids) ペアを正例として記録する。
+-- Phase B でこの履歴を使い、 類似 query が来た時に過去 hit を boost する
+-- パーソナライズ検索を実現する (agentmemory の RRF / 信頼度スコアの代替)。
+-- 「忘れない」 原則と完全両立: 履歴は消さず、 重み付けに使うだけ。
+CREATE TABLE IF NOT EXISTS recall_triggers (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts                TEXT NOT NULL DEFAULT (datetime('now', '+9 hours')),
+  source_episode_id INTEGER REFERENCES episodes(id),
+  trigger_phrase    TEXT NOT NULL,                  -- 「Phase 1 の決定」 等の抽出 phrase
+  query_embedding   BLOB,                            -- phrase ではなく user 発話全文の embedding
+  hit_fact_ids      TEXT NOT NULL DEFAULT '[]',     -- JSON array of fact ids
+  hit_episode_ids   TEXT NOT NULL DEFAULT '[]'      -- JSON array of episode ids
+);
+
+CREATE INDEX IF NOT EXISTS idx_recall_triggers_ts        ON recall_triggers(ts);
+CREATE INDEX IF NOT EXISTS idx_recall_triggers_source_ep ON recall_triggers(source_episode_id);

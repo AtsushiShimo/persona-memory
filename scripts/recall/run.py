@@ -9,8 +9,10 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
+import sys
 
 from scripts.debug.recall_log import (
     is_enabled as debug_enabled,
@@ -26,6 +28,7 @@ from scripts.recall.search import (
     search_episodes_by_fts,
 )
 from scripts.recall.summarize import summarize_recall
+from scripts.shared.embedding import pack
 from scripts.shared.ollama import LLMClient
 
 EMBED_MODEL = os.environ.get("PERSONA_EMBED_MODEL", "nomic-embed-text")
@@ -89,6 +92,39 @@ def fetch_buffer(
     return [{"role": r[0], "content": r[1]} for r in reversed(rows)]
 
 
+def _save_recall_trigger(
+    conn: sqlite3.Connection,
+    source_episode_id: int | None,
+    trigger_phrase: str,
+    query_embedding: list[float],
+    hit_fact_ids: list[int],
+    hit_episode_ids: list[int],
+) -> None:
+    """想起トリガー学習 (0.6.12): 過去参照表現を含む発話の (query, hit) ペアを正例保存.
+
+    Phase A: 蓄積のみ。 ランキングへの組み込みは Phase B で別途。
+    失敗してもサイレント (recall 本流を止めない).
+    """
+    try:
+        emb_blob = pack(query_embedding) if query_embedding else None
+        conn.execute(
+            "INSERT INTO recall_triggers"
+            "  (source_episode_id, trigger_phrase, query_embedding,"
+            "   hit_fact_ids, hit_episode_ids)"
+            "  VALUES (?, ?, ?, ?, ?)",
+            (
+                source_episode_id,
+                trigger_phrase,
+                emb_blob,
+                json.dumps(hit_fact_ids, ensure_ascii=False),
+                json.dumps(hit_episode_ids, ensure_ascii=False),
+            ),
+        )
+        conn.commit()
+    except Exception as e:
+        sys.stderr.write(f"[persona-memory] save recall_trigger failed: {e}\n")
+
+
 def recall(
     conn: sqlite3.Connection,
     content: str,
@@ -97,12 +133,16 @@ def recall(
     recall_model: str = RECALL_MODEL,
     embed_model: str = EMBED_MODEL,
     session_id: str | None = None,
+    source_episode_id: int | None = None,
 ) -> str:
     """ユーザー発話から関連記憶を引き、要約 additionalContext を返す。
 
     session_id 指定時は buffer 取得を同 session に絞る (0.6.11).
     facts / episodes の検索本体は全 session 横断のまま (session 跨ぎで
     過去知識を参照したいユースケースが多いため).
+
+    source_episode_id: 当該 user 発話の episode id. analysis.trigger_phrase が
+    抽出された時、 想起トリガー学習用に recall_triggers へ正例保存する (0.6.12).
     """
     if not content.strip():
         return ""
@@ -158,6 +198,21 @@ def recall(
                 continue
             seen_ids.add(h.episode_id)
             episodes_hits.append(h)
+
+    # 4.5: 想起トリガー学習用に正例ペアを記録 (0.6.12 Phase A)
+    # analysis.trigger_phrase が抽出された = ユーザーが過去参照表現を投げた瞬間。
+    # その時 hit した fact_ids / episode_ids を「このマスター個別の正解」 として
+    # 保存。 Phase B で類似 query 来訪時に boost ランキングを構築する素材。
+    # 「忘れない」 原則: 履歴は消さず、 重みづけにのみ使う。
+    if analysis.trigger_phrase:
+        _save_recall_trigger(
+            conn,
+            source_episode_id=source_episode_id,
+            trigger_phrase=analysis.trigger_phrase,
+            query_embedding=query_emb,
+            hit_fact_ids=[h.fact_id for h in hits],
+            hit_episode_ids=[h.episode_id for h in episodes_hits],
+        )
 
     if not hits and not episodes_hits:
         if debug_enabled():

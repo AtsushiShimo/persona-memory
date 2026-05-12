@@ -75,7 +75,9 @@ def main() -> int:
                 try:
                     from scripts.recall.run import recall
                     recall_section = recall(
-                        conn, prompt, OllamaClient(), session_id=session_id,
+                        conn, prompt, OllamaClient(),
+                        session_id=session_id,
+                        source_episode_id=episode_id,
                     )
                 except Exception as e:
                     sys.stderr.write(f"[persona-memory] recall failed: {e}\n")

@@ -33,11 +33,17 @@ class FakeRecallClient:
     # 入れていなくても fact 側の vector と一致させたいので、default を
     # [1.0]+[0]*767 にする (fact 登録側も同じ vector を使う)。
     default_embedding: list[float] = field(default_factory=lambda: [1.0] + [0.0] * 767)
+    # 0.6.12: 想起トリガー学習用. None なら trigger_phrase を出さない (後方互換).
+    trigger_phrase: str | None = None
 
     def generate(self, model: str, prompt: str) -> str:
         if "search_history" in prompt:
             return json.dumps(
-                {"keywords": self.keywords, "search_history": self.search_history},
+                {
+                    "keywords": self.keywords,
+                    "search_history": self.search_history,
+                    "trigger_phrase": self.trigger_phrase,
+                },
                 ensure_ascii=False,
             )
         return self.summary
@@ -359,3 +365,72 @@ def test_recall_empty_when_no_hits(db):
         embedding_map={"コーヒー": [1.0] + [0.0] * 767},
     )
     assert recall(db, "深煎り", client) == ""
+
+
+# ── 0.6.12 想起トリガー学習 (Phase A: 蓄積のみ) ─────────────────────────────
+
+def test_parse_analysis_extracts_trigger_phrase():
+    """parse_analysis が trigger_phrase フィールドを正しく拾うこと."""
+    from scripts.recall.extract import parse_analysis
+
+    a = parse_analysis(
+        '{"keywords": ["Phase 1"], "search_history": true, '
+        '"trigger_phrase": "Phase 1 の決定"}'
+    )
+    assert a.trigger_phrase == "Phase 1 の決定"
+    assert a.search_history is True
+
+
+def test_parse_analysis_trigger_phrase_null():
+    """null / 文字列 'null' / 欠落いずれも None に正規化."""
+    from scripts.recall.extract import parse_analysis
+
+    assert parse_analysis(
+        '{"keywords": [], "search_history": false, "trigger_phrase": null}'
+    ).trigger_phrase is None
+    assert parse_analysis(
+        '{"keywords": [], "search_history": false, "trigger_phrase": "null"}'
+    ).trigger_phrase is None
+    assert parse_analysis(
+        '{"keywords": [], "search_history": false}'
+    ).trigger_phrase is None
+
+
+def test_recall_saves_recall_trigger_when_phrase_present(db):
+    """trigger_phrase 抽出時、 recall_triggers に正例行が作られること."""
+    save_episode(db, role="user", content="さっき何話した?", session_id="s1")
+    insert_new(db, FactCandidate("preference", "coffee", "深煎り好き", 6), [1.0] + [0.0] * 767)
+    db.commit()
+
+    client = FakeRecallClient(
+        keywords=["コーヒー"],
+        search_history=True,
+        trigger_phrase="さっきの議論",
+        embedding_map={"コーヒー": [1.0] + [0.0] * 767},
+    )
+    recall(db, "さっき何話したっけ?", client, source_episode_id=1)
+
+    rows = db.execute(
+        "SELECT trigger_phrase, hit_fact_ids, source_episode_id FROM recall_triggers"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == "さっきの議論"
+    assert "1" in rows[0][1] or rows[0][1] != "[]"  # 何らかの fact_id が入っている
+    assert rows[0][2] == 1
+
+
+def test_recall_no_trigger_save_when_phrase_absent(db):
+    """trigger_phrase が None の通常発話では recall_triggers に行を作らない."""
+    insert_new(db, FactCandidate("preference", "coffee", "深煎り好き", 6), [1.0] + [0.0] * 767)
+    db.commit()
+
+    client = FakeRecallClient(
+        keywords=["コーヒー"],
+        search_history=False,
+        trigger_phrase=None,  # 過去参照なし
+        embedding_map={"コーヒー": [1.0] + [0.0] * 767},
+    )
+    recall(db, "コーヒーの話", client, source_episode_id=1)
+
+    n = db.execute("SELECT COUNT(*) FROM recall_triggers").fetchone()[0]
+    assert n == 0
