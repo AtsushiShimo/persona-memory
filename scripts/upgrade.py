@@ -368,6 +368,65 @@ def _ensure_lint_tables(conn) -> bool:
     return after > before
 
 
+def _migrate_config_env_to_relative(db_path: Path) -> str:
+    """config.env の PERSONA_MEMORY_DB を絶対パスから ${CLAUDE_PROJECT_DIR} 基準に書き換える.
+
+    旧 init.sh / new-persona.sh は絶対パスで書いていたため、プロジェクトディレクトリを
+    コピー・移動すると古い場所を指したまま壊れる。新形式 (literal ${CLAUDE_PROJECT_DIR})
+    に書き換えて移動耐性を確保する。
+
+    戻り値:
+      "migrated" — 旧形式を検出して書き換えた
+      "already"  — 既に新形式
+      "skipped"  — config.env が無い、または PERSONA_MEMORY_DB 行が無い
+    """
+    persona = db_path.stem
+    config_env = db_path.parent / f"{persona}.config.env"
+    if not config_env.exists():
+        return "skipped"
+    try:
+        text = config_env.read_text(encoding="utf-8")
+    except Exception:
+        return "skipped"
+
+    lines = text.splitlines(keepends=True)
+    new_value = (
+        f'PERSONA_MEMORY_DB="${{CLAUDE_PROJECT_DIR:-$(pwd)}}/'
+        f'.persona-memory/{persona}.db"'
+    )
+    changed = False
+    found = False
+    out_lines = []
+    for line in lines:
+        stripped = line.lstrip()
+        if stripped.startswith("PERSONA_MEMORY_DB="):
+            found = True
+            # 既に literal ${CLAUDE_PROJECT_DIR} が含まれていれば新形式
+            if "${CLAUDE_PROJECT_DIR" in stripped:
+                out_lines.append(line)
+                continue
+            # 旧形式 (絶対パス等) → 書き換え
+            newline_char = "\n" if line.endswith("\n") else ""
+            out_lines.append(new_value + newline_char)
+            changed = True
+        else:
+            out_lines.append(line)
+
+    if not found:
+        return "skipped"
+    if not changed:
+        return "already"
+
+    # backup + atomic write
+    backup = config_env.with_suffix(config_env.suffix + ".bak")
+    try:
+        backup.write_text(text, encoding="utf-8")
+    except Exception:
+        pass
+    config_env.write_text("".join(out_lines), encoding="utf-8")
+    return "migrated"
+
+
 def upgrade(db_path: Path) -> dict[str, int]:
     """戻り値: 各操作のカウント."""
     counts = {
@@ -527,6 +586,15 @@ def main() -> None:
         sys.exit(2)
 
     counts = upgrade(db_path)
+
+    # config.env を ${CLAUDE_PROJECT_DIR} 基準の相対形式に migrate
+    # (旧 init.sh / new-persona.sh が絶対パスで書いていた config.env を救済)
+    cfg_result = _migrate_config_env_to_relative(db_path)
+    if cfg_result == "migrated":
+        print("  migrated config.env PERSONA_MEMORY_DB → ${CLAUDE_PROJECT_DIR} 相対形式")
+    elif cfg_result == "already":
+        print("  config.env は既に相対形式 (skip)")
+
     print()
     print(
         f"upgrade summary: inserted={counts['inserted']}, "
