@@ -434,3 +434,69 @@ def test_recall_no_trigger_save_when_phrase_absent(db):
 
     n = db.execute("SELECT COUNT(*) FROM recall_triggers").fetchone()[0]
     assert n == 0
+
+
+# ── 0.6.15 Phase B: 想起トリガー学習からの recall boost ────────────────────
+
+def test_fetch_similar_triggers_returns_close_phrases(db):
+    """trigger_phrase の query_embedding が近い行を distance 昇順で返す."""
+    from scripts.shared.embedding import pack
+    from scripts.recall.triggers import fetch_similar_triggers
+    import json
+
+    # 2 つの trigger を仕込む: 近い側と遠い側
+    near_emb = [1.0] + [0.0] * 767
+    far_emb = [0.0] * 767 + [1.0]
+    db.execute(
+        "INSERT INTO recall_triggers (trigger_phrase, query_embedding, hit_fact_ids, hit_episode_ids) "
+        "VALUES (?, ?, ?, ?)",
+        ("近い参照", pack(near_emb), json.dumps([10, 20]), json.dumps([100])),
+    )
+    db.execute(
+        "INSERT INTO recall_triggers (trigger_phrase, query_embedding, hit_fact_ids, hit_episode_ids) "
+        "VALUES (?, ?, ?, ?)",
+        ("遠い参照", pack(far_emb), json.dumps([30]), json.dumps([])),
+    )
+    db.commit()
+
+    out = fetch_similar_triggers(db, near_emb, top_k=5, distance_max=1.0)
+    assert len(out) >= 1
+    assert out[0]["phrase"] == "近い参照"
+    assert out[0]["hit_fact_ids"] == [10, 20]
+    assert out[0]["hit_episode_ids"] == [100]
+
+
+def test_apply_fact_boost_reorders_hits(db):
+    """boost を適用すると低 score の fact が上位に来ること."""
+    from scripts.recall.search import RecalledFact
+    from scripts.recall.triggers import apply_fact_boost
+
+    a = RecalledFact(
+        fact_id=1, category="preference", key="x", value="X",
+        importance=5, access_count=0, distance=0.5, score=0.5,
+    )
+    b = RecalledFact(
+        fact_id=2, category="preference", key="y", value="Y",
+        importance=5, access_count=0, distance=0.4, score=0.6,
+    )
+    # 初期: b > a
+    hits = [b, a]
+    # a に強い boost (weight=10)
+    boosted = apply_fact_boost(hits, fact_boost={1: 10.0}, gain=1.0)
+    # boost 後: a の score = 0.5 + 10 = 10.5, b の score = 0.6 → a が 1 位
+    assert boosted[0].fact_id == 1
+    assert boosted[0].score > boosted[1].score
+
+
+def test_recall_trigger_boost_can_be_disabled(monkeypatch, db):
+    """PERSONA_RECALL_TRIGGER_BOOST=0 で boost を無効化できる."""
+    from scripts.recall.triggers import trigger_boost_enabled
+
+    monkeypatch.setenv("PERSONA_RECALL_TRIGGER_BOOST", "0")
+    assert trigger_boost_enabled() is False
+
+    monkeypatch.setenv("PERSONA_RECALL_TRIGGER_BOOST", "1")
+    assert trigger_boost_enabled() is True
+
+    monkeypatch.delenv("PERSONA_RECALL_TRIGGER_BOOST", raising=False)
+    assert trigger_boost_enabled() is True  # default ON

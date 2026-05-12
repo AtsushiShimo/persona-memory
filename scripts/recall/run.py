@@ -28,6 +28,12 @@ from scripts.recall.search import (
     search_episodes_by_fts,
 )
 from scripts.recall.summarize import summarize_recall
+from scripts.recall.triggers import (
+    apply_fact_boost,
+    compute_boost_maps,
+    fetch_similar_triggers,
+    trigger_boost_enabled,
+)
 from scripts.shared.embedding import pack
 from scripts.shared.ollama import LLMClient
 
@@ -173,6 +179,18 @@ def recall(
 
     # 3. facts 検索
     hits = search(conn, embeddings)
+
+    # 3.5: 想起トリガー学習による boost (0.6.15 Phase B)
+    # 過去に類似 query で hit した fact_id を、 現 query の hit score に加点する。
+    # = ユーザー個別の再参照成功パターンを反映 (agentmemory の generic RRF を
+    # パーソナライズで超える). 「忘れない」 原則: 履歴は消さず、 重みのみ動かす.
+    if trigger_boost_enabled():
+        similar = fetch_similar_triggers(conn, query_emb)
+        if similar:
+            fact_boost, _ep_boost = compute_boost_maps(similar)
+            if fact_boost:
+                hits = apply_fact_boost(hits, fact_boost)
+
     if debug_enabled():
         log_hits(len(analysis.keywords), [
             {
