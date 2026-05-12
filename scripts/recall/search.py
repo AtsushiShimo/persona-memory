@@ -53,6 +53,10 @@ class RecalledFact:
     # main エージェントの context に「両方提示+正解添え」 で流す.
     # source='lint_conflict' の supersede 時のみセットされる. None なら無し.
     retracted_value: str | None = None
+    # 0.6.16 反事実記憶 Phase A2: 撤回理由 (旧 fact の reason_superseded).
+    # conversation 由来の supersede でも write LLM が reason を抽出していれば
+    # 添えられる. summarize 側で「(理由: Y) のため撤回済」 を出すための材料.
+    retracted_reason: str | None = None
 
 
 def _parse_jst(s: str) -> datetime | None:
@@ -110,12 +114,16 @@ def _search_one(
         )
         SELECT f.id, f.category, f.key, f.value, f.importance, f.access_count,
                COALESCE(f.last_accessed_at, f.updated_at) AS ts, knn.distance,
-               old.value AS retracted_value
+               old.value AS retracted_value,
+               old.reason_superseded AS retracted_reason
         FROM knn
         JOIN facts f ON f.id = knn.fact_id
         LEFT JOIN facts old
           ON old.id = f.supersedes
-          AND old.source = 'lint_conflict'
+          AND (
+            old.source = 'lint_conflict'
+            OR old.reason_superseded IS NOT NULL
+          )
         WHERE f.status = 'active'
           AND (
             f.category NOT IN ('persona', 'rule')
@@ -129,7 +137,7 @@ def _search_one(
     now = datetime.now(JST)
     out: list[RecalledFact] = []
     for r in rows:
-        fid, cat, key, val, imp, acc, ts, dist, retracted = r
+        fid, cat, key, val, imp, acc, ts, dist, retracted, reason = r
         if dist > distance_max:
             continue
         ts_dt = _parse_jst(ts)
@@ -142,6 +150,7 @@ def _search_one(
             importance=imp, access_count=acc, distance=dist,
             score=_score(dist, age_days, imp, acc),
             retracted_value=retracted,
+            retracted_reason=reason,
         ))
     return out
 

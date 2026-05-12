@@ -23,7 +23,14 @@ def _format_fact(f: RecalledFact) -> str:
     if f.retracted_value:
         # lint で矛盾と判定され撤回された旧 value. summarize LLM が「以前は X
         # と言っていたが撤回済み」 形式で main agent に伝える.
-        base += f"\n    (※ 過去には『{f.retracted_value}』 と言っていたが撤回済)"
+        # 0.6.16 反事実記憶: write LLM が抽出した撤回理由があれば添える.
+        if f.retracted_reason:
+            base += (
+                f"\n    (※ 過去には『{f.retracted_value}』 と言っていたが "
+                f"『{f.retracted_reason}』 のため撤回済)"
+            )
+        else:
+            base += f"\n    (※ 過去には『{f.retracted_value}』 と言っていたが撤回済)"
     return base
 
 

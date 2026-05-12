@@ -257,7 +257,9 @@ def process_episode(
                 outcome=f"local-decided overwrite of {match.category}/{match.key}",
             )
 
-        action = apply_candidate(conn, cand, match, embedding, source="conversation")
+        action = apply_candidate(
+            conn, cand, match, embedding, source="conversation", reason=cand.reason,
+        )
         results.append((cand, action))
     return results
 

@@ -480,3 +480,57 @@ def test_apply_candidate_supersede_reason_optional_backward_compat(db):
     ).fetchone()
     assert old[0] == "superseded"
     assert old[1] is None  # reason 未指定 → NULL
+
+
+# ── 0.6.16 反事実記憶 Phase A2: write LLM が reason を抽出 → DB に伝搬 ─────
+
+def test_parse_response_extracts_reason():
+    """FactCandidate.reason が parse_response で正しく取れること."""
+    from scripts.write.extract import parse_response
+
+    cands = parse_response(
+        '[{"category": "preference", "key": "coffee_roast", '
+        '"value": "深煎り", "importance": 5, '
+        '"reason": "味の好みが変わったため"}]'
+    )
+    assert len(cands) == 1
+    assert cands[0].reason == "味の好みが変わったため"
+
+
+def test_parse_response_reason_optional():
+    """reason フィールド未指定 / null / 文字列 'null' いずれも None に正規化."""
+    from scripts.write.extract import parse_response
+
+    a = parse_response('[{"category": "preference", "key": "x", "value": "y", "importance": 5}]')
+    assert a[0].reason is None
+
+    b = parse_response('[{"category": "preference", "key": "x", "value": "y", "importance": 5, "reason": null}]')
+    assert b[0].reason is None
+
+    c = parse_response('[{"category": "preference", "key": "x", "value": "y", "importance": 5, "reason": "null"}]')
+    assert c[0].reason is None
+
+
+def test_process_episode_passes_reason_to_persist(db):
+    """write LLM が reason を返した場合、 旧 fact の reason_superseded に書き込まれる."""
+    # 既存 fact (浅煎り)
+    insert_new(db, FactCandidate("preference", "coffee_roast", "浅煎り派", 5), [0.1] * 768)
+    db.commit()
+
+    eid = save_episode(db, role="user", content="やっぱり深煎りに変えた", session_id="s1")
+    client = FakeClient(
+        facts=[{
+            "category": "preference", "key": "coffee_roast",
+            "value": "深煎り派", "importance": 6,
+            "reason": "味の好みが変わったため",
+        }],
+        embed_value=[0.9] + [0.0] * 767,
+    )
+    process_episode(db, eid, buffer_n=3, client=client)
+
+    # 旧 fact (浅煎り) の reason_superseded が埋まっている
+    row = db.execute(
+        "SELECT status, reason_superseded FROM facts WHERE value='浅煎り派'",
+    ).fetchone()
+    assert row[0] == "superseded"
+    assert row[1] == "味の好みが変わったため"

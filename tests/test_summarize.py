@@ -122,4 +122,36 @@ def test_build_summarize_prompt_no_retracted_when_none():
     # 撤回行が無いこと
     facts_section = prompt.split("[ヒットした記憶 fact]")[1].split("[ヒットした会話ログ]")[0]
     assert "過去には" not in facts_section
-    assert "(※" not in facts_section
+
+
+# ── 0.6.16 反事実記憶: retracted_reason の prompt 反映 ─────────────────────
+
+def test_build_summarize_prompt_includes_retracted_reason():
+    """retracted_reason 付きなら撤回理由が prompt に明示される."""
+    fact = RecalledFact(
+        fact_id=1, category="preference", key="coffee",
+        value="深煎り派", importance=6, access_count=0,
+        distance=0.1, score=0.5,
+        retracted_value="浅煎り派",
+        retracted_reason="味の好みが変わったため",
+    )
+    prompt = build_summarize_prompt("コーヒー?", [fact], [])
+    assert "浅煎り派" in prompt
+    assert "味の好みが変わったため" in prompt
+    assert "撤回済" in prompt
+
+
+def test_build_summarize_prompt_retracted_reason_optional():
+    """retracted_value だけ (reason なし) は従来通り理由なし表記."""
+    fact = RecalledFact(
+        fact_id=1, category="preference", key="coffee",
+        value="深煎り派", importance=6, access_count=0,
+        distance=0.1, score=0.5,
+        retracted_value="浅煎り派",
+        retracted_reason=None,
+    )
+    prompt = build_summarize_prompt("コーヒー?", [fact], [])
+    assert "浅煎り派" in prompt
+    assert "撤回済" in prompt
+    # 「のため撤回済」 形式は reason 有りの時のみ
+    assert "のため撤回済" not in prompt

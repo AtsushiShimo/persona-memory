@@ -40,6 +40,10 @@ class FactCandidate:
     key: str
     value: str
     importance: int
+    # 0.6.16 反事実記憶 Phase A2: この fact が既存の言質を「撤回・変更」 する場合、
+    # その理由を 1 文で. None なら撤回ではなく純粋な新規 / 補強.
+    # apply_candidate が supersede 判定した時のみ persist 経路で使われる。
+    reason: str | None = None
 
     def is_valid(self) -> bool:
         return (
@@ -212,6 +216,15 @@ key 命名例 (主題 prefix + 属性):
   - preference / aversion: 4-6
 - 出力は JSON 配列のみ (説明・前置き・コードフェンス禁止)
 - 抽出対象が無ければ `[]`
+- **撤回・変更の場合は `reason` フィールドを追加** (任意 / 該当なしなら省略):
+  buffer 中に「過去には X と言っていた」 ような言質があり、 今回の発話がそれを
+  撤回・上書きする内容なら、 撤回理由を 1 文で `reason` に書く.
+  例: 旧「浅煎り派」 → 新「深煎り派」 (理由: 味の好みが変わったため).
+    ```
+    [{{"category": "preference", "key": "coffee_roast", "value": "深煎り",
+       "importance": 5, "reason": "味の好みが変わったため"}}]
+    ```
+  単なる新規 fact (撤回伴わない) には reason を書かない.
 
 ## 入力
 
@@ -256,11 +269,18 @@ def parse_response(text: str) -> list[FactCandidate]:
         if not isinstance(item, dict):
             continue
         try:
+            raw_reason = item.get("reason")
+            reason: str | None = None
+            if isinstance(raw_reason, str):
+                s = raw_reason.strip()
+                if s and s.lower() != "null":
+                    reason = s
             fc = FactCandidate(
                 category=str(item.get("category", "")).strip().lower(),
                 key=str(item.get("key", "")).strip(),
                 value=str(item.get("value", "")).strip(),
                 importance=int(item.get("importance", 5)),
+                reason=reason,
             )
         except (TypeError, ValueError):
             continue
