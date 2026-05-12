@@ -5,19 +5,22 @@ PRAGMA foreign_keys = ON;
 -- SQLite は TZ サポートを持たないので datetime('now', '+9 hours') で生成。
 
 CREATE TABLE IF NOT EXISTS facts (
-  id                INTEGER PRIMARY KEY AUTOINCREMENT,
-  category          TEXT NOT NULL CHECK (category IN ('persona','rule','preference','aversion','profile','skill','context','knowledge')),
-  key               TEXT NOT NULL,
-  value             TEXT NOT NULL,
-  importance        INTEGER NOT NULL CHECK (importance BETWEEN 1 AND 9),
-  access_count      INTEGER NOT NULL DEFAULT 0,
-  status            TEXT NOT NULL CHECK (status IN ('active','superseded')) DEFAULT 'active',
-  supersedes        INTEGER REFERENCES facts(id),
-  superseded_by     INTEGER REFERENCES facts(id),
-  source            TEXT,
-  created_at        TEXT NOT NULL DEFAULT (datetime('now', '+9 hours')),
-  updated_at        TEXT NOT NULL DEFAULT (datetime('now', '+9 hours')),
-  last_accessed_at  TEXT
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  category           TEXT NOT NULL CHECK (category IN ('persona','rule','preference','aversion','profile','skill','context','knowledge')),
+  key                TEXT NOT NULL,
+  value              TEXT NOT NULL,
+  importance         INTEGER NOT NULL CHECK (importance BETWEEN 1 AND 9),
+  access_count       INTEGER NOT NULL DEFAULT 0,
+  status             TEXT NOT NULL CHECK (status IN ('active','superseded')) DEFAULT 'active',
+  supersedes         INTEGER REFERENCES facts(id),
+  superseded_by      INTEGER REFERENCES facts(id),
+  source             TEXT,
+  -- 0.6.14 反事実記憶: 撤回理由を保存. recall で「過去には X と言ったが
+  -- (理由: Y) のため撤回済」 と参照可能にする。 NULL = 理由不明 (旧データ互換).
+  reason_superseded  TEXT,
+  created_at         TEXT NOT NULL DEFAULT (datetime('now', '+9 hours')),
+  updated_at         TEXT NOT NULL DEFAULT (datetime('now', '+9 hours')),
+  last_accessed_at   TEXT
 );
 
 -- active 層は (category, key) で一意 (last-write-wins を物理担保)

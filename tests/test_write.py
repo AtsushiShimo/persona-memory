@@ -425,3 +425,58 @@ def test_process_episode_buffer_respects_episode_session(db):
     assert captured_buffers, "extract LLM が呼ばれていない"
     joined = "\n".join(captured_buffers)
     assert "MACD" not in joined, f"別 session の発話が混入: {joined!r}"
+
+
+# ── 0.6.14: 反事実記憶 (facts.reason_superseded) ───────────────────────────
+
+def test_supersede_persists_reason(db):
+    """supersede 関数に reason を渡したら旧 fact 行に保存されること."""
+    from scripts.write.persist import supersede
+    from scripts.write.similarity import find_by_key
+
+    insert_new(db, FactCandidate("preference", "coffee", "浅煎り派", 5), [0.1] * 768)
+    db.commit()
+    match = find_by_key(db, "preference", "coffee")
+    new_cand = FactCandidate("preference", "coffee", "深煎り派", 6)
+    supersede(db, match, new_cand, embedding=[0.2] * 768, reason="味の好みが変わったため")
+    db.commit()
+
+    old = db.execute(
+        "SELECT status, reason_superseded FROM facts WHERE id=?", (match.fact_id,),
+    ).fetchone()
+    assert old[0] == "superseded"
+    assert old[1] == "味の好みが変わったため"
+
+
+def test_apply_candidate_supersede_with_reason(db):
+    """apply_candidate 経由で reason が旧 fact に保存されること."""
+    from scripts.write.similarity import find_by_key
+
+    insert_new(db, FactCandidate("preference", "coffee", "浅煎り派", 5), [0.1] * 768)
+    db.commit()
+    match = find_by_key(db, "preference", "coffee")
+    new_cand = FactCandidate("preference", "coffee", "深煎り派", 6)
+    action = apply_candidate(
+        db, new_cand, match, embedding=[0.2] * 768, reason="深煎りに変えた",
+    )
+    assert action == "supersede"
+    old = db.execute(
+        "SELECT reason_superseded FROM facts WHERE id=?", (match.fact_id,),
+    ).fetchone()[0]
+    assert old == "深煎りに変えた"
+
+
+def test_apply_candidate_supersede_reason_optional_backward_compat(db):
+    """reason 引数なしでも従来通り動く (旧呼び出しの後方互換)."""
+    from scripts.write.similarity import find_by_key
+
+    insert_new(db, FactCandidate("preference", "coffee", "浅煎り派", 5), [0.1] * 768)
+    db.commit()
+    match = find_by_key(db, "preference", "coffee")
+    new_cand = FactCandidate("preference", "coffee", "深煎り派", 6)
+    apply_candidate(db, new_cand, match, embedding=[0.2] * 768)
+    old = db.execute(
+        "SELECT status, reason_superseded FROM facts WHERE id=?", (match.fact_id,),
+    ).fetchone()
+    assert old[0] == "superseded"
+    assert old[1] is None  # reason 未指定 → NULL

@@ -402,6 +402,21 @@ def _ensure_recall_triggers_table(conn) -> bool:
     return after > before
 
 
+def _ensure_reason_superseded_column(conn) -> bool:
+    """0.6.14 反事実記憶: facts.reason_superseded カラムを既存 DB に追加.
+
+    SQLite の ALTER TABLE ADD COLUMN を使う. PRAGMA table_info で既存確認.
+    戻り値: 新規追加された場合 True.
+    """
+    cols = conn.execute("PRAGMA table_info(facts)").fetchall()
+    names = {row[1] for row in cols}
+    if "reason_superseded" in names:
+        return False
+    conn.execute("ALTER TABLE facts ADD COLUMN reason_superseded TEXT")
+    conn.commit()
+    return True
+
+
 def _ensure_discussion_graph_tables(conn) -> bool:
     """0.6.13 追加の discussion_nodes / discussion_edges を既存 DB に migrate.
 
@@ -511,6 +526,7 @@ def upgrade(db_path: Path) -> dict[str, int]:
         "episodes_fts_built": 0,
         "recall_triggers_added": 0,
         "discussion_graph_added": 0,
+        "reason_superseded_added": 0,
     }
     conn = connect(db_path)
     client = OllamaClient()
@@ -531,6 +547,9 @@ def upgrade(db_path: Path) -> dict[str, int]:
         if _ensure_discussion_graph_tables(conn):
             counts["discussion_graph_added"] = 1
             print("  added discussion graph tables (discussion_nodes, discussion_edges)")
+        if _ensure_reason_superseded_column(conn):
+            counts["reason_superseded_added"] = 1
+            print("  added facts.reason_superseded column (counterfactual memory)")
         # 1. 廃止された default を active → superseded に降格
         for category, key in DEPRECATED_BOOT_FACTS:
             row = conn.execute(

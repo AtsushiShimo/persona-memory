@@ -57,6 +57,7 @@ def supersede(
     candidate: FactCandidate,
     embedding: list[float] | None,
     source: str | None = None,
+    reason: str | None = None,
 ) -> int:
     """旧 fact を superseded に降格 → 新 fact を挿入 (supersedes リンク張る)。
 
@@ -67,8 +68,14 @@ def supersede(
     recall の vec0 knn 検索で古い (active 外) embedding が枠を喰い、
     active fact が漏れる現象が起きる (status は SQL 側で filter する
     が、knn の k は filter 前に決まるため)。
+
+    reason: 撤回理由 (0.6.14 反事実記憶). 指定時は旧 fact 行の
+    reason_superseded 列に書き込む。 None なら従来通り NULL.
     """
-    conn.execute("UPDATE facts SET status = 'superseded' WHERE id = ?", (match.fact_id,))
+    conn.execute(
+        "UPDATE facts SET status = 'superseded', reason_superseded = ? WHERE id = ?",
+        (reason, match.fact_id),
+    )
     conn.execute("DELETE FROM fact_embeddings WHERE fact_id = ?", (match.fact_id,))
     new_id = insert_new(conn, candidate, embedding, source, supersedes=match.fact_id)
     conn.execute("UPDATE facts SET superseded_by = ? WHERE id = ?", (new_id, match.fact_id))
@@ -81,6 +88,7 @@ def apply_candidate(
     match: Match | None,
     embedding: list[float] | None,
     source: str | None = None,
+    reason: str | None = None,
 ) -> str:
     """1 候補に対して 補強 / 変更 / 新規挿入 のいずれかを適用。
 
@@ -114,7 +122,7 @@ def apply_candidate(
 
     if match.method == "embedding" and match.key != candidate.key:
         candidate.key = match.key
-    supersede(conn, match, candidate, embedding, source)
+    supersede(conn, match, candidate, embedding, source, reason=reason)
     if candidate.category in BOOT_CATEGORIES:
         mark_dirty(conn)
     conn.commit()
