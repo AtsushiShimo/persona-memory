@@ -56,11 +56,16 @@ def db_path() -> Path:
 
 @contextmanager
 def connect():
-    conn = sqlite3.connect(db_path())
+    # MCP server プロセスは常駐し hook (scripts/db/connection.py 経由) と
+    # 並列で write するため、busy_timeout 不在だと Stop hook の save_episode 等が
+    # 即 'database is locked' で落ちる。hook 側と同じ 30s 待機に揃える。
+    conn = sqlite3.connect(db_path(), timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.enable_load_extension(True)
     sqlite_vec.load(conn)
     conn.enable_load_extension(False)
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 30000")
     try:
         yield conn
         conn.commit()
