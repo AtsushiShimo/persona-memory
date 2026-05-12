@@ -241,9 +241,13 @@ def lint_around_fact(
     out = {"pairs_examined": 0, "flagged": 0, "auto_resolved": 0}
     if seen_pairs is None:
         seen_pairs = set()
+
+    # ------- Phase A: read (短時間 conn 使用) -------
     fact = _fetch_fact(conn, fact_id)
     if not fact or fact["status"] != "active":
         return out
+
+    # ------- Phase B: embed LLM (DB に touch しない) -------
     # value 単独ではなく `<cat>/<key>: <value>` を embed (recall と一致)
     embed_text = f"{fact['category']}/{fact['key']}: {fact['value']}"
     try:
@@ -252,26 +256,34 @@ def lint_around_fact(
         return out
     if not vec:
         return out
+
+    # ------- Phase A2: 近傍 read (短時間 conn 使用) -------
     neighbors = _fetch_neighbors(
         conn, fact_id, fact["category"], fact["key"], vec,
         NEIGHBOR_TOP_K, NEIGHBOR_DISTANCE_MAX,
     )
+
+    # ------- Phase B2 & C: judge LLM ごとに 1 conn touch -------
+    # 0.6.10 で transaction 短縮: judge LLM (10-30s/件) は conn を経由せず実行し、
+    # 結果が出てから _fetch_active_status / _auto_supersede / _record_conflict を
+    # 短時間 で実行する。これにより lint 中の他プロセス write がブロックされない。
     for n in neighbors:
         pair = tuple(sorted((fact_id, n["id"])))
         if pair in seen_pairs:
             continue
         seen_pairs.add(pair)
-        # judge LLM 直前にもう一度 active 確認 (race 対策)
-        cur_status = conn.execute(
-            "SELECT status FROM facts WHERE id=?", (n["id"],),
-        ).fetchone()
-        if not cur_status or cur_status[0] != "active":
-            continue
+        # judge LLM (DB touch なし)
         contradict, confidence = judge_conflict(
             fact["value"], n["value"], client,
         )
         out["pairs_examined"] += 1
         if not contradict:
+            continue
+        # 短時間 conn touch: race 対策の active 確認 → write
+        cur_status = conn.execute(
+            "SELECT status FROM facts WHERE id=?", (n["id"],),
+        ).fetchone()
+        if not cur_status or cur_status[0] != "active":
             continue
         older_id, newer_id = pair  # ソート済み = 小さい方が古い
         if confidence >= AUTO_RESOLVE_THRESHOLD:
@@ -281,7 +293,7 @@ def lint_around_fact(
         elif confidence >= FLAG_THRESHOLD:
             _record_conflict(conn, fact_id, n["id"], confidence, "flagged")
             out["flagged"] += 1
-    conn.commit()
+        conn.commit()
     return out
 
 

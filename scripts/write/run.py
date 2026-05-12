@@ -95,31 +95,40 @@ def _extract_via_claude(role: str, content: str, buffer: list[dict]) -> list[Fac
     return parse_response(r.text)
 
 
-def _embed_episode(
-    conn: sqlite3.Connection,
+def _compute_episode_embedding(
     episode_id: int,
     content: str,
     client: LLMClient,
     embed_model: str,
-) -> None:
-    """episode 全文を embedding 化して episode_embeddings に格納.
+) -> list[float] | None:
+    """episode 全文の embedding を計算 (DB には触らない).
 
-    既に entry がある場合は INSERT OR REPLACE で更新。
-    失敗時は何もしない (recall 側で当該 episode が引けないだけで他には影響なし)。
+    LLM 呼び出しのみ。失敗時は None。書き込みは _persist_episode_embedding で.
     """
     if not content or not content.strip():
-        return
+        return None
     try:
         vec = client.embed(embed_model, content)
         if not vec:
-            return
+            return None
+        return vec
+    except Exception as e:
+        sys.stderr.write(f"[persona-memory] episode embedding failed (id={episode_id}): {e}\n")
+        return None
+
+
+def _persist_episode_embedding(
+    conn: sqlite3.Connection, episode_id: int, vec: list[float],
+) -> None:
+    """事前計算した embedding を episode_embeddings に書き込む (短時間)."""
+    try:
         conn.execute(
             "INSERT OR REPLACE INTO episode_embeddings(episode_id, embedding) VALUES (?, ?)",
             (episode_id, pack(vec)),
         )
         conn.commit()
     except Exception as e:
-        sys.stderr.write(f"[persona-memory] episode embedding failed (id={episode_id}): {e}\n")
+        sys.stderr.write(f"[persona-memory] episode embedding write failed (id={episode_id}): {e}\n")
 
 
 def process_episode(
@@ -135,25 +144,28 @@ def process_episode(
     副作用: 当該 episode の content を embedding 化して episode_embeddings に格納
     (recall 時のベクトル検索の対象になる)。
     """
+    # ------- Phase A: read (短時間 conn 使用) -------
     episode = fetch_episode(conn, episode_id)
     if not episode:
         return []
     buffer = fetch_buffer(conn, episode_id, buffer_n)
 
-    # episode 全文を embedding 化 (recall 時のベクトル検索のため)
-    _embed_episode(conn, episode_id, episode["content"], client, embed_model)
+    # ------- Phase B: LLM 呼び出し (DB に touch しない) -------
+    # 0.6.10 で transaction 短縮: episode embed / extract / candidate embed を全て
+    # この phase で一括計算し、後続の Phase C で短時間に DB write する。LLM 呼び出し
+    # 中に conn を経由した execute() を呼ばないことで、他プロセス (assistant 発話の
+    # save_episode 等) が write transaction を取れる窓を確保する.
 
-    # 入力サイズで long_input エスカレーション判定
+    # episode 全文 embedding (DB write は Phase C)
+    episode_emb = _compute_episode_embedding(
+        episode_id, episode["content"], client, embed_model,
+    )
+
+    # 入力サイズで long_input エスカレーション判定 + extract LLM
     full_input = episode["content"] + "\n" + "\n".join(b.get("content", "") for b in buffer)
     reason = should_escalate(input_text=full_input)
-
     if reason == "long_input":
         candidates = _extract_via_claude(episode["role"], episode["content"], buffer)
-        log_escalation(
-            conn, reason="long_input", caller="write",
-            input_size=estimate_tokens(full_input),
-            outcome=f"extracted {len(candidates)} facts",
-        )
     else:
         candidates = extract_facts(
             role=episode["role"],
@@ -162,8 +174,6 @@ def process_episode(
             client=client,
             model=write_model,
         )
-    if not candidates:
-        return []
 
     # write LLM が指示違反で同じ (category, key) で複数 candidate を出した時の
     # セーフティネット: 2 件目以降に `_2`, `_3` の suffix を付けて情報損失を防ぐ.
@@ -185,19 +195,38 @@ def process_episode(
             )
             cand.key = new_key
 
-    results: list[tuple[FactCandidate, str]] = []
+    # 各 candidate の embedding を pre-compute (DB write は Phase C)
+    # value 単独ではなく `<category>/<key>: <value>` を embed する。
+    # nomic-embed-text は短い・OOV-like な入力 (例: 「糖尿病」「MVP」「猫」) を
+    # 同じ default embedding に collapse させるため、value 単独だと無関係な
+    # fact 同士が cosine 距離 0 で衝突する。category/key を前置して長く・diverse
+    # なテキストにすることで衝突確率を大幅に下げる (boot 層は upgrade.py で
+    # 既にこのフォーマット)。
+    cand_embeds: list[list[float]] = []
     for cand in candidates:
-        # value 単独ではなく `<category>/<key>: <value>` を embed する。
-        # nomic-embed-text は短い・OOV-like な入力 (例: 「糖尿病」「MVP」「猫」) を
-        # 同じ default embedding に collapse させるため、value 単独だと無関係な
-        # fact 同士が cosine 距離 0 で衝突する。category/key を前置して長く・diverse
-        # なテキストにすることで衝突確率を大幅に下げる (boot 層は upgrade.py で
-        # 既にこのフォーマット)。
         embed_text = f"{cand.category}/{cand.key}: {cand.value}"
         try:
             embedding = client.embed(embed_model, embed_text)
         except Exception:
             embedding = []
+        cand_embeds.append(embedding)
+
+    # ------- Phase C: DB write (短時間 conn 使用、LLM 呼び出しなし) -------
+    if episode_emb is not None:
+        _persist_episode_embedding(conn, episode_id, episode_emb)
+
+    if reason == "long_input":
+        log_escalation(
+            conn, reason="long_input", caller="write",
+            input_size=estimate_tokens(full_input),
+            outcome=f"extracted {len(candidates)} facts",
+        )
+
+    if not candidates:
+        return []
+
+    results: list[tuple[FactCandidate, str]] = []
+    for cand, embedding in zip(candidates, cand_embeds):
         match = find_match(conn, cand.category, cand.key, embedding)
 
         # importance >= 8 で既存と矛盾 (supersede 候補) なら裁定をログだけ残す。
