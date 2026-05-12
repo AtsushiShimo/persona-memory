@@ -21,7 +21,7 @@
 
 ---
 
-## 2. 現在の状態 (2026-05-11, version 0.5.25)
+## 2. 現在の状態 (2026-05-12, version 0.6.17)
 
 ### 動く機能
 
@@ -42,6 +42,12 @@
 | **立ち位置 5 軸** | init 時 + 後付けで `persona/stance` に自然語形式で記録 | `scripts/seed_persona.py`, `add_stance.py` |
 | **MCP search_memory 条件付き許可** | 自動 recall で物足りない時のみ main agent が意図的に呼んで補強検索 | `boot/defaults.py` の `persona/explicit_recall_via_mcp` |
 | **外部ナレッジ保存** | web 調査 (WebFetch / web-page-reader / x-post-reader) 結果を構造化して category=`knowledge` で保存。 同 URL 再調査で上書き、 別 URL は並存 | `server/main.py:save_knowledge`, `boot/defaults.py:playbook_after_web_research` |
+| **MCP server inline 登録 (0.6.8)** | plugin.json の mcpServers から `scripts/run_mcp_server.sh` を起動。 marketplace install でも MCP が露出する | `.claude-plugin/plugin.json`, `scripts/run_mcp_server.sh` |
+| **DB locked 対策 (0.6.9-10)** | write/lint の LLM 呼び出し中は conn を touch せず、 Phase A read → B LLM → C write の順に再配置。 busy_timeout 30s + foreign_keys は last-resort safety net | `scripts/write/run.py`, `scripts/lint/run.py`, `server/db.py` |
+| **session 混線 fix (0.6.11)** | write/recall の fetch_buffer に session_id 絞り。 並行 session の発話が文脈混入しない (検索本体は session 横断) | `scripts/write/run.py`, `scripts/recall/run.py`, `scripts/hooks/on_user_prompt.py` |
+| **想起トリガー学習 (0.6.12, 0.6.15)** | 過去参照表現を含む発話の (query_embedding, hit fact/episode ids) を `recall_triggers` に蓄積し、 類似 query に対し過去 hit を boost する **パーソナライズド recall**。 agentmemory の RRF を超える差別化軸 | `scripts/recall/triggers.py`, `scripts/recall/extract.py`, `scripts/recall/run.py` |
+| **議論グラフ (0.6.13, 0.6.17)** | `discussion_nodes` / `discussion_edges` で論点 / 検討案 / 採用判断 / 撤回を DAG として構造化。 write LLM が同一呼び出しで facts + nodes を抽出 (追加 LLM コール 0). 状態 (proposed/accepted/rejected/superseded/observed) で「忘れない」 を担保 | `scripts/discussion/graph.py`, `scripts/write/extract.py`, `scripts/write/run.py` |
+| **反事実記憶 (0.6.14, 0.6.16)** | `facts.reason_superseded` 列に撤回理由を保存。 write LLM が `reason` フィールドで抽出し、 recall で「『旧』 と言っていたが『理由』 のため撤回済」 を summarize prompt に提示 | `scripts/write/extract.py`, `scripts/write/persist.py`, `scripts/recall/search.py`, `scripts/recall/summarize.py` |
 
 ### slash commands
 
@@ -194,10 +200,34 @@ write は detached child なので hook 経由で投入する必要がある。 
 - `/persona-memory:condense` — boot 層が肥大化した時の要約統合
 - `/persona-memory:allow-last + secret-allowlist` — 機密誤検出時の上書き
 - 3 並列 Ollama daemon 最適化
-- topic タグ (source 列の構造化)
+- topic タグ (source 列の構造化) — **0.6.13 で議論グラフとして別形で実装済** (discussion_nodes)
 - SessionEnd 一括 lint (現状 write_tail のみ)
 
 これらは **ユーザーが「同意取れてない」 と明言済**。 勝手に着手しない。
+
+### 7.1b agentmemory との差別化進行中 (2026-05-12 着手, ユーザー合意済)
+
+competitor `rohitg00/agentmemory` (5000★, 4-tier consolidation + 知識グラフ +
+RRF + Ebbinghaus 減衰 + 自動忘却) との差別化軸として 7 案を整理し、
+「忘れない」 原則と完全両立する 案 1-3 から着手中:
+
+- **案 1 議論グラフ (Discussion Graph)** ─ 状態遷移を持つ DAG.
+  - Phase A1 ✅ (0.6.13): schema + CRUD + traversal helper
+  - Phase A2 ✅ (0.6.17): write LLM が nodes 抽出 → 保存
+  - Phase B ⏳: recall で `latest_decision_for_topic` を統合し「あの議論はどう決まった?」 系の直答
+- **案 2 想起トリガー学習** ─ パーソナライズド recall ランキング.
+  - Phase A ✅ (0.6.12): trigger 蓄積
+  - Phase B ✅ (0.6.15): boost 適用、 実機で順位改善実証済
+- **案 3 反事実記憶** ─ 撤回理由保持.
+  - Phase A1 ✅ (0.6.14): reason_superseded 列
+  - Phase A2/B ✅ (0.6.16): write LLM 抽出 + recall 表示
+- **案 4 人格条件付き embedding** ⏳ 未着手
+- **案 5 絶対時刻軸 (明示要求時のみ)** ⏳ 役割縮小済、 優先度低
+- **案 6 意図的失念ゾーン** ⏳ 未着手
+- **案 7 Cross-persona Federation** ⏳ 未着手
+
+実機検証残: 0.6.16 (reason 抽出) / 0.6.17 (nodes 抽出) は write LLM の prompt 修正を
+含むため、 既存 fact 抽出精度への副作用が無いか実機で要確認。
 
 ### 7.2 write LLM の品質課題 (= LLM 任せの部分)
 
