@@ -31,6 +31,41 @@ from scripts.shared.ollama import LLMClient
 EMBED_MODEL = os.environ.get("PERSONA_EMBED_MODEL", "nomic-embed-text")
 BUFFER_N = int(os.environ.get("PERSONA_BUFFER_N", "3"))
 
+# 0.6.7: recall 出力の total token budget (近似値). 0 = 無効化.
+# 日本語 1 char ≒ 0.5-0.8 token, 英数記号 ≒ 0.25 token なので mixed で
+# 1 char ≒ 0.4 token と粗く見積もる → chars_budget = budget / 0.4 = budget * 2.5.
+# default 500 tokens は 6-8 fact + 数件 episode title 相当.
+TOKEN_BUDGET = int(os.environ.get("PERSONA_RECALL_TOKEN_BUDGET", "500"))
+
+
+def _estimate_tokens(text: str) -> int:
+    """char 数からの粗い token 近似. 日本語混在前提で 1 token ≒ 2.5 char.
+
+    tiktoken 等の正確な tokenizer を呼ばないのは:
+    (a) 依存追加を避ける, (b) main agent 側の tokenizer が何かに左右される
+    ため正確さに意味がない. 粗い ceiling として使えれば十分.
+    """
+    if not text:
+        return 0
+    return max(1, int(len(text) / 2.5))
+
+
+def _truncate_to_budget(text: str, budget_tokens: int) -> str:
+    """text 全体を token budget に収めるよう末尾切り捨て.
+
+    行単位で末尾から落とす. 行が無くなったら char 単位で切り詰め.
+    """
+    if budget_tokens <= 0 or _estimate_tokens(text) <= budget_tokens:
+        return text
+    char_budget = int(budget_tokens * 2.5)
+    lines = text.split("\n")
+    while len(lines) > 1 and _estimate_tokens("\n".join(lines)) > budget_tokens:
+        lines.pop()
+    out = "\n".join(lines)
+    if _estimate_tokens(out) > budget_tokens and char_budget > 0:
+        out = out[:char_budget].rstrip() + "…"
+    return out
+
 
 def fetch_buffer(conn: sqlite3.Connection, n: int) -> list[dict]:
     rows = conn.execute(
@@ -142,6 +177,10 @@ def recall(
             if debug_enabled():
                 log_final_prompt("")
             return ""
+
+    # 0.6.7: total token budget の ceiling. score 降順の前提で末尾から落とす.
+    if TOKEN_BUDGET > 0:
+        additional_context = _truncate_to_budget(additional_context, TOKEN_BUDGET)
 
     if debug_enabled():
         log_final_prompt(additional_context)

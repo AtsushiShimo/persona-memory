@@ -14,10 +14,11 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from scripts.shared.embedding import pack
+from scripts.shared.embedding import pack, unpack
 
 JST = timezone(timedelta(hours=9))
-RECENCY_LAMBDA = float(os.environ.get("PERSONA_RECALL_RECENCY_LAMBDA", "0.05"))
+# 0.6.7: 半減期 14 日 → 9 日に短縮 (古い meta 議論 / 完了済 problem 認識を風化).
+RECENCY_LAMBDA = float(os.environ.get("PERSONA_RECALL_RECENCY_LAMBDA", "0.08"))
 TOP_K_PER_KEYWORD = int(os.environ.get("PERSONA_RECALL_TOP_K_PER_KEYWORD", "25"))
 # cosine 距離スケール [0, 2]:
 #   0.0 = 完全一致 / 0.3 = 強い類似 / 0.5 = 弱い類似 / 1.0 = 直交 / 2.0 = 真逆
@@ -26,6 +27,15 @@ TOP_K_PER_KEYWORD = int(os.environ.get("PERSONA_RECALL_TOP_K_PER_KEYWORD", "25")
 # 判定は summarize_recall LLM (役割: librarian) に委ねる。
 DISTANCE_MAX = float(os.environ.get("PERSONA_RECALL_DISTANCE_MAX", "0.6"))
 FINAL_TOP_K = int(os.environ.get("PERSONA_RECALL_FINAL_TOP_K", "15"))
+
+# 0.6.7: hit 同士の embedding 距離が閾値以内なら同一クラスタとし, score 最高
+# 1 件だけ残す近傍重複 dedup. ローカル LLM の prompt では「同主旨を重複 fact 化
+# しない」 と書いてあるが守られないケースが頻出 (例: 「トークン消費激しい」
+# 系の meta 議論が複数 fact に分裂). recall 側で物理的に collapse する.
+#   distance スケール: 0.10 = ほぼ同一 / 0.15 = 強い近傍 / 0.20 = 緩い近傍
+# 0.15 は cosine sim 0.85 相当. 厳しすぎず緩すぎずの中間値.
+CLUSTER_DISTANCE = float(os.environ.get("PERSONA_RECALL_CLUSTER_DISTANCE", "0.15"))
+CLUSTER_ENABLED = os.environ.get("PERSONA_RECALL_CLUSTER", "1").strip() not in ("", "0", "false")
 
 
 @dataclass
@@ -136,12 +146,94 @@ def _search_one(
     return out
 
 
+def _fetch_embeddings(
+    conn: sqlite3.Connection, fact_ids: list[int]
+) -> dict[int, list[float]]:
+    """fact_id → embedding の dict を返す. 取得失敗は dict に含めない."""
+    if not fact_ids:
+        return {}
+    placeholders = ",".join("?" * len(fact_ids))
+    out: dict[int, list[float]] = {}
+    try:
+        rows = conn.execute(
+            f"SELECT fact_id, embedding FROM fact_embeddings WHERE fact_id IN ({placeholders})",
+            fact_ids,
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    for fid, blob in rows:
+        if blob:
+            try:
+                out[fid] = unpack(blob)
+            except Exception:
+                continue
+    return out
+
+
+def _cluster_dedup(
+    ranked: list[RecalledFact],
+    embeddings: dict[int, list[float]],
+    cluster_distance: float = CLUSTER_DISTANCE,
+) -> list[RecalledFact]:
+    """近傍重複を greedy で潰す. score 降順前提.
+
+    各 hit に対し既に採用済みの代表 hit との cosine 距離を計算し,
+    閾値以内のものが 1 つでもあれば skip. なければ採用.
+    embedding が無い hit は無条件で残す (= 旧 fact の embedding 欠落でも
+    recall 自体は動き続ける safety net).
+    """
+    if not ranked:
+        return []
+    kept: list[RecalledFact] = []
+    kept_embs: list[list[float]] = []
+    for hit in ranked:
+        emb = embeddings.get(hit.fact_id)
+        if not emb:
+            kept.append(hit)
+            continue
+        absorbed = False
+        for kemb in kept_embs:
+            if _cosine_distance(emb, kemb) <= cluster_distance:
+                absorbed = True
+                break
+        if absorbed:
+            continue
+        kept.append(hit)
+        kept_embs.append(emb)
+    return kept
+
+
+def _cosine_distance(a: list[float], b: list[float]) -> float:
+    """cosine distance [0, 2]. 0 = 同一方向, 1 = 直交, 2 = 真逆."""
+    if not a or not b or len(a) != len(b):
+        return 1.0
+    dot = 0.0
+    na = 0.0
+    nb = 0.0
+    for x, y in zip(a, b):
+        dot += x * y
+        na += x * x
+        nb += y * y
+    if na == 0.0 or nb == 0.0:
+        return 1.0
+    return 1.0 - (dot / (math.sqrt(na) * math.sqrt(nb)))
+
+
 def search(
     conn: sqlite3.Connection,
     keyword_embeddings: list[list[float]],
     final_top_k: int = FINAL_TOP_K,
+    cluster_enabled: bool = CLUSTER_ENABLED,
+    cluster_distance: float = CLUSTER_DISTANCE,
 ) -> list[RecalledFact]:
-    """複数キーワードで検索 → 重複除去 (max score) → score 降順 top K."""
+    """複数キーワードで検索 → 重複除去 (max score) → score 降順 → 近傍重複
+    クラスタ dedup → top K.
+
+    クラスタ dedup (0.6.7): hit 同士の embedding 距離が cluster_distance
+    以内なら同一クラスタとし, score 最高の 1 件だけ残す. これでローカル LLM
+    の prompt で抑えきれない「同主旨の重複 fact」 (例: 「トークン消費激しい」
+    系 meta 議論が 6 件並走) を物理的に 1 件に collapse する.
+    """
     if not keyword_embeddings:
         return []
     by_id: dict[int, RecalledFact] = {}
@@ -153,6 +245,9 @@ def search(
             if cur is None or hit.score > cur.score:
                 by_id[hit.fact_id] = hit
     ranked = sorted(by_id.values(), key=lambda x: x.score, reverse=True)
+    if cluster_enabled and len(ranked) > 1:
+        embs = _fetch_embeddings(conn, [h.fact_id for h in ranked])
+        ranked = _cluster_dedup(ranked, embs, cluster_distance)
     return ranked[:final_top_k]
 
 

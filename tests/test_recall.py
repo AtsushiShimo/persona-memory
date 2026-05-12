@@ -119,7 +119,9 @@ def test_search_ranks_by_score(db):
     db.execute("UPDATE facts SET access_count = 10 WHERE key='high'")
     db.commit()
 
-    hits = search(db, [[1.0] + [0.0] * 767])
+    # 0.6.7: 同一 embedding の異なる fact は near-duplicate cluster に潰れるため
+    # ランキング検証目的では cluster_enabled=False で従来挙動を維持.
+    hits = search(db, [[1.0] + [0.0] * 767], cluster_enabled=False)
     assert len(hits) == 2
     assert hits[0].key == "high"  # 高 importance + 高 access_count
 
@@ -150,12 +152,72 @@ def test_search_excludes_boot_layer(db):
     insert_new(db, FactCandidate("aversion", "sweets", "甘い物控える", 7), [1.0] + [0.0] * 767)
     db.commit()
 
-    hits = search(db, [[1.0] + [0.0] * 767])
+    # 0.6.7: cluster_enabled=False で boot 層除外のみ純粋検証 (同 embedding
+    # の preference/aversion が cluster で 1 件に潰れるのを回避).
+    hits = search(db, [[1.0] + [0.0] * 767], cluster_enabled=False)
     cats = {h.category for h in hits}
     assert "persona" not in cats
     assert "rule" not in cats
     assert "preference" in cats
     assert "aversion" in cats
+
+
+def test_search_clusters_near_duplicates(db):
+    """0.6.7: 同一に近い embedding を持つ複数 fact は cluster で 1 件に潰す.
+
+    ローカル LLM の prompt で「同主旨を重複 fact 化しない」 と書いても
+    守られないケース (例: 「トークン消費激しい」 系 meta 議論の重複) を
+    recall 側で物理的に dedup する.
+    """
+    # ほぼ同じ embedding (cosine 距離 < 0.15)
+    emb1 = [1.0, 0.05] + [0.0] * 766
+    emb2 = [1.0, 0.06] + [0.0] * 766  # 1 と極めて近い
+    emb3 = [0.0, 0.0, 1.0] + [0.0] * 765  # 明確に直交 (距離 = 1)
+
+    # importance 違いで 3 件挿入 → cluster で 2 残るはず (emb1/emb2 が collapse)
+    insert_new(db, FactCandidate("context", "topic_a_v1", "話題A 言及1", 6), emb1)
+    insert_new(db, FactCandidate("context", "topic_a_v2", "話題A 言及2", 8), emb2)
+    insert_new(db, FactCandidate("context", "topic_b", "別話題", 6), emb3)
+    db.commit()
+
+    # 両方の話題に近い query を別々に流す (DISTANCE_MAX で topic_b が
+    # 漏れないように emb3 もキーワードに含める)
+    hits = search(db, [emb1, emb3])
+    keys = [h.key for h in hits]
+    # emb1/emb2 cluster からは importance 高い topic_a_v2 が残る
+    assert "topic_a_v2" in keys
+    # topic_a_v1 (cluster 内で score 低) は dedup される
+    assert "topic_a_v1" not in keys
+    # 別 cluster の topic_b は残る
+    assert "topic_b" in keys
+
+
+def test_search_cluster_can_be_disabled(db):
+    """cluster_enabled=False で従来挙動 (重複も全部残る)."""
+    emb1 = [1.0, 0.05] + [0.0] * 766
+    emb2 = [1.0, 0.06] + [0.0] * 766
+    insert_new(db, FactCandidate("context", "a", "言及1", 6), emb1)
+    insert_new(db, FactCandidate("context", "b", "言及2", 6), emb2)
+    db.commit()
+
+    hits = search(db, [emb1], cluster_enabled=False)
+    keys = {h.key for h in hits}
+    assert keys == {"a", "b"}
+
+
+def test_search_cluster_preserves_far_apart_facts(db):
+    """直交する embedding を持つ別話題の fact は cluster で潰されない."""
+    emb1 = [1.0] + [0.0] * 767
+    emb2 = [0.0, 1.0] + [0.0] * 766  # 直交 (距離 = 1.0)
+    insert_new(db, FactCandidate("context", "topic_x", "X", 6), emb1)
+    insert_new(db, FactCandidate("context", "topic_y", "Y", 6), emb2)
+    db.commit()
+
+    # emb1 で検索 → 両方 hit (distance_max=0.6 内に emb1 のみのはずだが
+    # distance_max を緩めるため両方 hit させる用に embedding を選ぶ)
+    hits = search(db, [emb1, emb2])
+    keys = {h.key for h in hits}
+    assert keys == {"topic_x", "topic_y"}
 
 
 def test_bump_access_counts(db):
@@ -262,6 +324,32 @@ def test_recall_runs_even_when_keywords_empty(db):
     # recall は走り、summarize 結果を返す (skip しない)
     assert "## 思い出した記憶" in out
     assert "深煎り" in out
+
+
+def test_truncate_to_budget_under_budget_returns_unchanged():
+    from scripts.recall.run import _truncate_to_budget
+
+    text = "短い文章"
+    # 4 char ≒ 1 token, budget 100 なら触らない
+    assert _truncate_to_budget(text, 100) == text
+
+
+def test_truncate_to_budget_drops_tail_lines():
+    from scripts.recall.run import _truncate_to_budget
+
+    text = "header\n" + "\n".join([f"- fact {i} " + ("x" * 20) for i in range(20)])
+    out = _truncate_to_budget(text, 50)  # 50 tokens ≒ 125 chars
+    assert len(out) <= len(text)
+    assert out.startswith("header")
+    # 末尾の fact 19 は落ちている
+    assert "fact 19" not in out
+
+
+def test_truncate_to_budget_disabled_when_zero():
+    from scripts.recall.run import _truncate_to_budget
+
+    text = "x" * 10000
+    assert _truncate_to_budget(text, 0) == text
 
 
 def test_recall_empty_when_no_hits(db):
