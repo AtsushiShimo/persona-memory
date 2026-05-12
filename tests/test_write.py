@@ -375,3 +375,53 @@ def test_process_episode_embeds_episode_for_recall(db):
         (eid,),
     ).fetchone()
     assert row is not None
+
+
+# ── 0.6.11: session 混線防止 (fetch_buffer の session 絞り込み) ───────────────
+
+def test_fetch_buffer_filters_by_session(db):
+    """並行 session の発話が buffer に混入しないこと (0.6.11)."""
+    from scripts.write.run import fetch_buffer
+
+    # session_a と session_b に交互に発話を入れる
+    save_episode(db, role="user", content="A1: Renju の話", session_id="session_a")
+    save_episode(db, role="user", content="B1: 株ロボの話", session_id="session_b")
+    save_episode(db, role="user", content="A2: Renju 続き", session_id="session_a")
+    save_episode(db, role="user", content="B2: 株ロボ続き", session_id="session_b")
+    eid_a3 = save_episode(db, role="user", content="A3: Renju さらに", session_id="session_a")
+
+    # session 絞り込みあり → session_a のみが拾われる
+    buf_a = fetch_buffer(db, eid_a3, n=10, session_id="session_a")
+    contents_a = [b["content"] for b in buf_a]
+    assert all("Renju" in c for c in contents_a)
+    assert all("株ロボ" not in c for c in contents_a)
+    assert len(contents_a) == 2  # A1, A2
+
+    # 絞り込みなし (後方互換) → 全 session 横断
+    buf_all = fetch_buffer(db, eid_a3, n=10)
+    contents_all = [b["content"] for b in buf_all]
+    assert any("Renju" in c for c in contents_all)
+    assert any("株ロボ" in c for c in contents_all)
+
+
+def test_process_episode_buffer_respects_episode_session(db):
+    """process_episode の buffer 構築が当該 episode と同一 session に絞られること."""
+    # session_a にコーヒーの話、 session_b に株の話
+    save_episode(db, role="user", content="深煎り派", session_id="session_a")
+    save_episode(db, role="user", content="MACD で取引判断", session_id="session_b")
+    eid = save_episode(db, role="user", content="やっぱりコーヒーは深煎り", session_id="session_a")
+
+    captured_buffers = []
+
+    class CapturingClient(FakeClient):
+        def generate(self, model, prompt):
+            captured_buffers.append(prompt)
+            return super().generate(model, prompt)
+
+    client = CapturingClient(facts=[])
+    process_episode(db, eid, buffer_n=10, client=client)
+
+    # extract LLM に渡された prompt 内に session_b の文字列が混入していないこと
+    assert captured_buffers, "extract LLM が呼ばれていない"
+    joined = "\n".join(captured_buffers)
+    assert "MACD" not in joined, f"別 session の発話が混入: {joined!r}"

@@ -74,7 +74,9 @@ def main() -> int:
             if os.environ.get("PERSONA_RECALL_DISABLE") != "1":
                 try:
                     from scripts.recall.run import recall
-                    recall_section = recall(conn, prompt, OllamaClient())
+                    recall_section = recall(
+                        conn, prompt, OllamaClient(), session_id=session_id,
+                    )
                 except Exception as e:
                     sys.stderr.write(f"[persona-memory] recall failed: {e}\n")
 

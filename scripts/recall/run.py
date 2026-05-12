@@ -67,11 +67,25 @@ def _truncate_to_budget(text: str, budget_tokens: int) -> str:
     return out
 
 
-def fetch_buffer(conn: sqlite3.Connection, n: int) -> list[dict]:
-    rows = conn.execute(
-        "SELECT role, content FROM episodes ORDER BY id DESC LIMIT ?",
-        (n,),
-    ).fetchall()
+def fetch_buffer(
+    conn: sqlite3.Connection, n: int, session_id: str | None = None,
+) -> list[dict]:
+    """直前 N 発話を取得. session_id 指定時は同一 session に絞る (0.6.11).
+
+    並行 session の発話が recall の文脈に混入して analyze_query が誤った
+    keyword 抽出をするのを防ぐ. None なら全 session 横断 (後方互換).
+    """
+    if session_id is not None:
+        rows = conn.execute(
+            "SELECT role, content FROM episodes WHERE session_id = ? "
+            "ORDER BY id DESC LIMIT ?",
+            (session_id, n),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT role, content FROM episodes ORDER BY id DESC LIMIT ?",
+            (n,),
+        ).fetchall()
     return [{"role": r[0], "content": r[1]} for r in reversed(rows)]
 
 
@@ -82,11 +96,17 @@ def recall(
     buffer_n: int = BUFFER_N,
     recall_model: str = RECALL_MODEL,
     embed_model: str = EMBED_MODEL,
+    session_id: str | None = None,
 ) -> str:
-    """ユーザー発話から関連記憶を引き、要約 additionalContext を返す。"""
+    """ユーザー発話から関連記憶を引き、要約 additionalContext を返す。
+
+    session_id 指定時は buffer 取得を同 session に絞る (0.6.11).
+    facts / episodes の検索本体は全 session 横断のまま (session 跨ぎで
+    過去知識を参照したいユースケースが多いため).
+    """
     if not content.strip():
         return ""
-    buffer = fetch_buffer(conn, buffer_n)
+    buffer = fetch_buffer(conn, buffer_n, session_id=session_id)
 
     # 1. LLM が発話を解析 (履歴参照意図 + keyword hint)
     #    keywords は debug / episode 検索 hint 用。recall を skip する判断には

@@ -77,11 +77,28 @@ def fetch_episode(conn: sqlite3.Connection, episode_id: int) -> dict | None:
     return {"id": row[0], "role": row[1], "content": row[2], "session_id": row[3]}
 
 
-def fetch_buffer(conn: sqlite3.Connection, before_id: int, n: int) -> list[dict]:
-    rows = conn.execute(
-        "SELECT role, content FROM episodes WHERE id < ? ORDER BY id DESC LIMIT ?",
-        (before_id, n),
-    ).fetchall()
+def fetch_buffer(
+    conn: sqlite3.Connection, before_id: int, n: int,
+    session_id: str | None = None,
+) -> list[dict]:
+    """直前 N 発話を取得. session_id 指定時は同一 session に絞る.
+
+    同一 persona の同一 DB に対し複数の Claude Code session が並行で書き込む
+    ケースで、 別 session の発話が buffer に混入して write LLM が誤った文脈で
+    fact 抽出するのを防ぐため (0.6.11).
+    """
+    if session_id is not None:
+        rows = conn.execute(
+            "SELECT role, content FROM episodes "
+            "WHERE id < ? AND session_id = ? "
+            "ORDER BY id DESC LIMIT ?",
+            (before_id, session_id, n),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT role, content FROM episodes WHERE id < ? ORDER BY id DESC LIMIT ?",
+            (before_id, n),
+        ).fetchall()
     # 古い順に並び替え
     return [{"role": r[0], "content": r[1]} for r in reversed(rows)]
 
@@ -148,7 +165,8 @@ def process_episode(
     episode = fetch_episode(conn, episode_id)
     if not episode:
         return []
-    buffer = fetch_buffer(conn, episode_id, buffer_n)
+    # 0.6.11: 同一 session に絞る (並行 session 間の混線防止).
+    buffer = fetch_buffer(conn, episode_id, buffer_n, session_id=episode.get("session_id"))
 
     # ------- Phase B: LLM 呼び出し (DB に touch しない) -------
     # 0.6.10 で transaction 短縮: episode embed / extract / candidate embed を全て
