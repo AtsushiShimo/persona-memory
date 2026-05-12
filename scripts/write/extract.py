@@ -54,6 +54,27 @@ class FactCandidate:
         )
 
 
+@dataclass
+class NodeCandidate:
+    """議論グラフ用ノード候補 (0.6.17 案 1 Phase A2).
+
+    write LLM の同一呼び出しで facts と一緒に抽出される. graph.add_node に
+    渡して discussion_nodes テーブルへ保存する素材.
+    """
+    kind: str       # topic / option / decision / retraction / rationale
+    title: str
+    state: str = "proposed"  # proposed / accepted / rejected / superseded / observed
+    content: str | None = None
+
+    def is_valid(self) -> bool:
+        from scripts.discussion.graph import VALID_KINDS, VALID_STATES
+        return (
+            self.kind in VALID_KINDS
+            and self.state in VALID_STATES
+            and bool(self.title)
+        )
+
+
 _PROMPT_TEMPLATE = """\
 ユーザーとアシスタントの会話から、長期記憶として残すべき事実 (fact) を抽出するツール。
 
@@ -226,6 +247,34 @@ key 命名例 (主題 prefix + 属性):
     ```
   単なる新規 fact (撤回伴わない) には reason を書かない.
 
+## 議論ノード (オプショナル, 該当なしなら省略)
+今回の発話が「論点 / 検討案 / 採用判断 / 撤回」 を含む場合は、 出力形式を
+JSON object に切り替え、 `nodes` キーで議論ノードも一緒に出す:
+- `kind`: "topic" (論点) / "option" (検討案) / "decision" (採用判断) /
+  "retraction" (撤回) / "rationale" (理由)
+- `title`: 短い見出し (15 字程度)
+- `state`: "proposed" / "accepted" (採用済) / "rejected" / "observed"
+- `content`: (任意) 詳細
+
+例: 「Renju のカテゴリは自由作成で決定」 という発話:
+```
+{{
+  "facts": [
+    {{"category": "context", "key": "renju_category_decision",
+      "value": "Renju カテゴリは自由作成で決定", "importance": 7}}
+  ],
+  "nodes": [
+    {{"kind": "decision", "title": "Renju カテゴリ自由作成", "state": "accepted",
+      "content": "テンプレ案を退け、 自由作成で確定"}}
+  ]
+}}
+```
+
+通常発話 (議論構造を含まない) では従来通り JSON 配列のみ出す:
+`[{{"category": "...", ...}}]`
+
+つまり nodes が無ければ array、 あれば object。 どちらでも parser は受け付ける.
+
 ## 入力
 
 直近の会話:
@@ -247,27 +296,46 @@ def build_prompt(role: str, content: str, buffer: list[dict]) -> str:
     return _PROMPT_TEMPLATE.format(buffer=buf_text, role=role, content=content)
 
 
-def parse_response(text: str) -> list[FactCandidate]:
-    """LLM 出力 (期待: JSON 配列) を FactCandidate のリストに変換。"""
+def _strip_code_fence(text: str) -> str:
+    return re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.MULTILINE)
+
+
+def _extract_fact_items(text: str) -> list[dict]:
+    """LLM 出力から fact 要素の list[dict] を取り出す.
+
+    0.6.17 で出力形式が「JSON 配列 or `{"facts": [...], "nodes": [...]}` object」
+    の 2 系統になったため、 どちらでも fact 配列を返す.
+    """
     if not text:
         return []
-    # コードフェンス除去 (LLM が時々付けるので)
-    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.MULTILINE)
-    # 配列部分を抽出 (前後ノイズ対策)
-    m = re.search(r"\[.*\]", cleaned, re.DOTALL)
-    if not m:
-        return []
-    try:
-        data = json.loads(m.group(0))
-    except json.JSONDecodeError:
-        return []
-    if not isinstance(data, list):
-        return []
+    cleaned = _strip_code_fence(text)
+    # まず object 形式を試す
+    m_obj = re.search(r"\{.*\}", cleaned, re.DOTALL)
+    if m_obj:
+        try:
+            data = json.loads(m_obj.group(0))
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict):
+            facts = data.get("facts")
+            if isinstance(facts, list):
+                return [x for x in facts if isinstance(x, dict)]
+    # 配列形式 (従来)
+    m_arr = re.search(r"\[.*\]", cleaned, re.DOTALL)
+    if m_arr:
+        try:
+            data = json.loads(m_arr.group(0))
+        except json.JSONDecodeError:
+            return []
+        if isinstance(data, list):
+            return [x for x in data if isinstance(x, dict)]
+    return []
 
+
+def parse_response(text: str) -> list[FactCandidate]:
+    """LLM 出力を FactCandidate のリストに変換 (object / array 両対応)."""
     out: list[FactCandidate] = []
-    for item in data:
-        if not isinstance(item, dict):
-            continue
+    for item in _extract_fact_items(text):
         try:
             raw_reason = item.get("reason")
             reason: str | None = None
@@ -289,6 +357,49 @@ def parse_response(text: str) -> list[FactCandidate]:
     return out
 
 
+def parse_nodes(text: str) -> list[NodeCandidate]:
+    """LLM 出力から議論ノード候補を取り出す (0.6.17 案 1 Phase A2).
+
+    出力が object 形式で `nodes` キーを持つ場合のみ返す. array 形式や
+    nodes キー欠落の場合は空リスト.
+    """
+    if not text:
+        return []
+    cleaned = _strip_code_fence(text)
+    m_obj = re.search(r"\{.*\}", cleaned, re.DOTALL)
+    if not m_obj:
+        return []
+    try:
+        data = json.loads(m_obj.group(0))
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, dict):
+        return []
+    raw_nodes = data.get("nodes")
+    if not isinstance(raw_nodes, list):
+        return []
+    out: list[NodeCandidate] = []
+    for item in raw_nodes:
+        if not isinstance(item, dict):
+            continue
+        try:
+            nc = NodeCandidate(
+                kind=str(item.get("kind", "")).strip().lower(),
+                title=str(item.get("title", "")).strip(),
+                state=str(item.get("state", "proposed")).strip().lower(),
+                content=(
+                    str(item["content"]).strip()
+                    if isinstance(item.get("content"), str) and item["content"].strip()
+                    else None
+                ),
+            )
+        except (TypeError, ValueError):
+            continue
+        if nc.is_valid():
+            out.append(nc)
+    return out
+
+
 def _extract_via_claude_backend(prompt: str) -> str:
     """`claude -p` を子プロセスとして呼び出し、出力テキストを返す.
 
@@ -299,6 +410,24 @@ def _extract_via_claude_backend(prompt: str) -> str:
     from scripts.escalate.claude_p import invoke_claude
     r = invoke_claude(prompt)
     return r.text if r.success else ""
+
+
+def _generate_extract_raw(
+    role: str, content: str, buffer: list[dict], client: LLMClient,
+    model: str, backend: str,
+) -> str:
+    """write LLM を 1 回呼んで raw text を返す内部 helper.
+
+    extract_facts と extract_facts_and_nodes が同じ呼び出し結果を共有するため
+    切り出した. 失敗時は空文字.
+    """
+    prompt = build_prompt(role, content, buffer)
+    try:
+        if backend == "claude":
+            return _extract_via_claude_backend(prompt)
+        return client.generate(model, prompt)
+    except Exception:
+        return ""
 
 
 def extract_facts(
@@ -315,12 +444,21 @@ def extract_facts(
       'ollama' (default) — client.generate(model, prompt) で Ollama に投げる
       'claude'           — `claude -p prompt` 子プロセスに丸投げ (診断用)
     """
-    prompt = build_prompt(role, content, buffer)
-    try:
-        if backend == "claude":
-            response = _extract_via_claude_backend(prompt)
-        else:
-            response = client.generate(model, prompt)
-    except Exception:
-        return []
-    return parse_response(response)
+    raw = _generate_extract_raw(role, content, buffer, client, model, backend)
+    return parse_response(raw)
+
+
+def extract_facts_and_nodes(
+    role: str,
+    content: str,
+    buffer: list[dict],
+    client: LLMClient,
+    model: str = WRITE_MODEL,
+    backend: str = WRITE_BACKEND,
+) -> tuple[list[FactCandidate], list[NodeCandidate]]:
+    """fact + 議論ノードを同じ LLM 呼び出しから抽出 (0.6.17 案 1 Phase A2).
+
+    LLM コール数は extract_facts と同じ (= 1). parse 側で fact / node を別解釈.
+    """
+    raw = _generate_extract_raw(role, content, buffer, client, model, backend)
+    return parse_response(raw), parse_nodes(raw)

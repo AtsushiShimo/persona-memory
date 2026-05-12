@@ -182,10 +182,12 @@ def process_episode(
     # 入力サイズで long_input エスカレーション判定 + extract LLM
     full_input = episode["content"] + "\n" + "\n".join(b.get("content", "") for b in buffer)
     reason = should_escalate(input_text=full_input)
+    node_candidates: list = []  # 0.6.17 議論ノード候補
     if reason == "long_input":
         candidates = _extract_via_claude(episode["role"], episode["content"], buffer)
     else:
-        candidates = extract_facts(
+        from scripts.write.extract import extract_facts_and_nodes
+        candidates, node_candidates = extract_facts_and_nodes(
             role=episode["role"],
             content=episode["content"],
             buffer=buffer,
@@ -239,6 +241,23 @@ def process_episode(
             input_size=estimate_tokens(full_input),
             outcome=f"extracted {len(candidates)} facts",
         )
+
+    # 0.6.17 案 1 Phase A2: 議論ノードを discussion_nodes へ保存.
+    # LLM 抽出失敗時 / 通常発話では node_candidates=[] でスキップ.
+    if node_candidates:
+        try:
+            from scripts.discussion.graph import add_node
+            for nc in node_candidates:
+                add_node(
+                    conn,
+                    kind=nc.kind,
+                    title=nc.title,
+                    state=nc.state,
+                    content=nc.content,
+                    episode_id=episode_id,
+                )
+        except Exception as e:
+            sys.stderr.write(f"[persona-memory] add_node failed: {e}\n")
 
     if not candidates:
         return []

@@ -534,3 +534,70 @@ def test_process_episode_passes_reason_to_persist(db):
     ).fetchone()
     assert row[0] == "superseded"
     assert row[1] == "味の好みが変わったため"
+
+
+# ── 0.6.17 案 1 Phase A2: write LLM 出力から議論ノード抽出 + 保存 ─────────
+
+def test_parse_response_handles_object_format():
+    """新出力形式 {"facts": [...], "nodes": [...]} でも facts を取れる."""
+    from scripts.write.extract import parse_response
+
+    out = parse_response(
+        '{"facts": [{"category": "preference", "key": "k", "value": "v", "importance": 5}], '
+        '"nodes": [{"kind": "decision", "title": "t", "state": "accepted"}]}'
+    )
+    assert len(out) == 1
+    assert out[0].key == "k"
+
+
+def test_parse_response_array_format_backward_compat():
+    """旧出力形式 (JSON 配列) でも従来通り facts を取れる."""
+    from scripts.write.extract import parse_response
+    out = parse_response('[{"category": "preference", "key": "k", "value": "v", "importance": 5}]')
+    assert len(out) == 1
+
+
+def test_parse_nodes_extracts_valid_nodes():
+    """object 形式から議論ノードを取り出す."""
+    from scripts.write.extract import parse_nodes
+
+    nodes = parse_nodes(
+        '{"facts": [], "nodes": [{"kind": "decision", "title": "Renju自由作成", '
+        '"state": "accepted", "content": "テンプレ案を退けた"}, '
+        '{"kind": "garbage", "title": "x", "state": "proposed"}]}'
+    )
+    # garbage kind は is_valid で弾かれる
+    assert len(nodes) == 1
+    assert nodes[0].kind == "decision"
+    assert nodes[0].title == "Renju自由作成"
+    assert nodes[0].state == "accepted"
+
+
+def test_parse_nodes_array_format_returns_empty():
+    """array 形式 (= 旧出力) の時は nodes 抽出は空 ─ 後方互換."""
+    from scripts.write.extract import parse_nodes
+    assert parse_nodes('[{"category": "preference", "key": "k", "value": "v", "importance": 5}]') == []
+
+
+def test_process_episode_persists_discussion_nodes(db):
+    """write LLM が nodes を返した場合、 discussion_nodes に保存される."""
+    eid = save_episode(db, role="user", content="Renju は自由作成で決定", session_id="s1")
+
+    # FakeClient は object 形式の文字列を返すよう拡張
+    class NodeAwareClient(FakeClient):
+        def generate(self, model, prompt):
+            return (
+                '{"facts": [{"category": "context", "key": "renju_decision", '
+                '"value": "自由作成", "importance": 7}], '
+                '"nodes": [{"kind": "decision", "title": "Renju自由作成", '
+                '"state": "accepted", "content": "テンプレ案を退けた"}]}'
+            )
+
+    client = NodeAwareClient(facts=[])  # facts は generate オーバーライドで上書き
+    process_episode(db, eid, buffer_n=3, client=client)
+
+    rows = db.execute(
+        "SELECT kind, title, state, content, episode_id FROM discussion_nodes"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0] == ("decision", "Renju自由作成", "accepted", "テンプレ案を退けた", eid)
