@@ -129,3 +129,43 @@ CREATE TABLE IF NOT EXISTS recall_triggers (
 
 CREATE INDEX IF NOT EXISTS idx_recall_triggers_ts        ON recall_triggers(ts);
 CREATE INDEX IF NOT EXISTS idx_recall_triggers_source_ep ON recall_triggers(source_episode_id);
+
+-- ── 0.6.13 議論グラフ (Discussion Graph) Phase A1 ────────────────────────
+-- agentmemory の静的知識グラフを「時系列・状態遷移を持つ DAG」 に進化させた
+-- 構造ナビゲーション基盤。 「あの議論はどう決まった?」 系の query で
+-- ランキング検索ではなく "末端 accepted ノード即答" を実現する素材。
+-- 「忘れない」 原則: rejected / superseded ノードも削除せず状態のみ遷移。
+--
+-- kind 例: 'topic' (論点) / 'option' (検討案) / 'decision' (採用判断) /
+--          'retraction' (撤回) / 'rationale' (理由)
+-- state 例: 'proposed' / 'accepted' / 'rejected' / 'superseded' / 'observed'
+CREATE TABLE IF NOT EXISTS discussion_nodes (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts          TEXT NOT NULL DEFAULT (datetime('now', '+9 hours')),
+  episode_id  INTEGER REFERENCES episodes(id),  -- 抽出元発話 (NULL 可)
+  kind        TEXT NOT NULL,
+  title       TEXT NOT NULL,                     -- 短い見出し (検索用)
+  state       TEXT NOT NULL DEFAULT 'proposed',
+  content     TEXT,                              -- 自由記述 (任意)
+  embedding   BLOB                               -- title + content の embedding (Phase B 用)
+);
+
+CREATE INDEX IF NOT EXISTS idx_discussion_nodes_ts      ON discussion_nodes(ts);
+CREATE INDEX IF NOT EXISTS idx_discussion_nodes_state   ON discussion_nodes(state);
+CREATE INDEX IF NOT EXISTS idx_discussion_nodes_kind    ON discussion_nodes(kind);
+CREATE INDEX IF NOT EXISTS idx_discussion_nodes_episode ON discussion_nodes(episode_id);
+
+-- edge_kind 例: 'derives_from' (派生) / 'considers' (論点が検討案を含む) /
+--               'decides' (検討案を採用) / 'retracts' (撤回) /
+--               'supersedes' (上書き) / 'depends_on' (前提)
+CREATE TABLE IF NOT EXISTS discussion_edges (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  src_id     INTEGER NOT NULL REFERENCES discussion_nodes(id),
+  dst_id     INTEGER NOT NULL REFERENCES discussion_nodes(id),
+  edge_kind  TEXT NOT NULL,
+  ts         TEXT NOT NULL DEFAULT (datetime('now', '+9 hours'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_discussion_edges_src  ON discussion_edges(src_id);
+CREATE INDEX IF NOT EXISTS idx_discussion_edges_dst  ON discussion_edges(dst_id);
+CREATE INDEX IF NOT EXISTS idx_discussion_edges_kind ON discussion_edges(edge_kind);

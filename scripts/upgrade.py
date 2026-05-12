@@ -402,6 +402,44 @@ def _ensure_recall_triggers_table(conn) -> bool:
     return after > before
 
 
+def _ensure_discussion_graph_tables(conn) -> bool:
+    """0.6.13 追加の discussion_nodes / discussion_edges を既存 DB に migrate.
+
+    schema.sql は IF NOT EXISTS なので idempotent.
+    戻り値: いずれか新規 create された場合 True.
+    """
+    schema_file = Path(__file__).resolve().parent / "db" / "schema.sql"
+    text = schema_file.read_text(encoding="utf-8")
+    snippets = []
+    for stmt in text.split(";"):
+        s = stmt.strip()
+        if not s:
+            continue
+        target = (
+            "discussion_nodes" in s and "CREATE TABLE" in s
+        ) or (
+            "discussion_edges" in s and "CREATE TABLE" in s
+        ) or (
+            "idx_discussion_nodes_" in s and "CREATE INDEX" in s
+        ) or (
+            "idx_discussion_edges_" in s and "CREATE INDEX" in s
+        )
+        if target:
+            snippets.append(s + ";")
+    before = conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master "
+        "WHERE type='table' AND name IN ('discussion_nodes','discussion_edges')"
+    ).fetchone()[0]
+    for s in snippets:
+        conn.execute(s)
+    conn.commit()
+    after = conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master "
+        "WHERE type='table' AND name IN ('discussion_nodes','discussion_edges')"
+    ).fetchone()[0]
+    return after > before
+
+
 def _migrate_config_env_to_relative(db_path: Path) -> str:
     """config.env の PERSONA_MEMORY_DB を絶対パスから ${CLAUDE_PROJECT_DIR} 基準に書き換える.
 
@@ -472,6 +510,7 @@ def upgrade(db_path: Path) -> dict[str, int]:
         "persona_core_restored": 0,
         "episodes_fts_built": 0,
         "recall_triggers_added": 0,
+        "discussion_graph_added": 0,
     }
     conn = connect(db_path)
     client = OllamaClient()
@@ -489,6 +528,9 @@ def upgrade(db_path: Path) -> dict[str, int]:
         if _ensure_recall_triggers_table(conn):
             counts["recall_triggers_added"] = 1
             print("  added recall_triggers table (recall trigger learning)")
+        if _ensure_discussion_graph_tables(conn):
+            counts["discussion_graph_added"] = 1
+            print("  added discussion graph tables (discussion_nodes, discussion_edges)")
         # 1. 廃止された default を active → superseded に降格
         for category, key in DEPRECATED_BOOT_FACTS:
             row = conn.execute(
