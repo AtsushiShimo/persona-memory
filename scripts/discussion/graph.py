@@ -29,6 +29,7 @@
 """
 from __future__ import annotations
 
+import math
 import sqlite3
 from typing import Iterable
 
@@ -177,3 +178,66 @@ def neighbors(
         }
         for r in rows
     ]
+
+
+def nearest_discussion_nodes(
+    conn: sqlite3.Connection,
+    query_emb: list[float],
+    top_k: int = 3,
+    kinds: Iterable[str] | None = None,
+    states: Iterable[str] | None = None,
+    max_distance: float = 0.6,
+) -> list[dict]:
+    """query_emb に対する最近傍ノードを cosine 距離で返す (Phase B, 0.6.18).
+
+    edges に依存せず embedding 直接検索で「直近の議論」 を即答する素材.
+    edges は LLM 抽出未整備のため Phase B では使わず, Phase C で復活させる.
+
+    max_distance: cosine 距離 (0..2) の閾値. これより遠いノードは捨てる.
+    nomic-embed-text の経験則で 0.6 以上は無関係に近い.
+    """
+    if not query_emb:
+        return []
+    sql = (
+        "SELECT id, kind, title, state, content, ts, episode_id, embedding "
+        "FROM discussion_nodes WHERE embedding IS NOT NULL"
+    )
+    params: list = []
+    if kinds:
+        klist = list(kinds)
+        sql += f" AND kind IN ({','.join('?' * len(klist))})"
+        params.extend(klist)
+    if states:
+        slist = list(states)
+        sql += f" AND state IN ({','.join('?' * len(slist))})"
+        params.extend(slist)
+    rows = conn.execute(sql, params).fetchall()
+    if not rows:
+        return []
+
+    from scripts.shared.embedding import unpack
+
+    q_norm = math.sqrt(sum(x * x for x in query_emb))
+    if q_norm == 0.0:
+        return []
+
+    scored: list[tuple[float, dict]] = []
+    for r in rows:
+        vec = unpack(r[7])
+        if len(vec) != len(query_emb):
+            continue
+        n_norm = math.sqrt(sum(x * x for x in vec))
+        if n_norm == 0.0:
+            continue
+        dot = sum(a * b for a, b in zip(query_emb, vec))
+        sim = dot / (q_norm * n_norm)
+        dist = 1.0 - sim
+        if dist > max_distance:
+            continue
+        scored.append((dist, {
+            "id": r[0], "kind": r[1], "title": r[2], "state": r[3],
+            "content": r[4], "ts": r[5], "episode_id": r[6],
+            "distance": dist,
+        }))
+    scored.sort(key=lambda x: x[0])
+    return [node for _, node in scored[:top_k]]

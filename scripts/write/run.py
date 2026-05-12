@@ -244,10 +244,23 @@ def process_episode(
 
     # 0.6.17 案 1 Phase A2: 議論ノードを discussion_nodes へ保存.
     # LLM 抽出失敗時 / 通常発話では node_candidates=[] でスキップ.
+    # 0.6.18 Phase B: ノードに embedding を付けて recall の近傍検索に乗せる.
     if node_candidates:
         try:
             from scripts.discussion.graph import add_node
+            from scripts.shared.embedding import pack, truncate_for_embedding
             for nc in node_candidates:
+                embed_text = nc.title
+                if nc.content:
+                    embed_text = f"{nc.title}\n{nc.content}"
+                embed_text = truncate_for_embedding(embed_text)
+                node_emb_blob: bytes | None = None
+                try:
+                    vec = client.embed(embed_model, embed_text)
+                    if vec:
+                        node_emb_blob = pack(vec)
+                except Exception:
+                    node_emb_blob = None
                 add_node(
                     conn,
                     kind=nc.kind,
@@ -255,6 +268,7 @@ def process_episode(
                     state=nc.state,
                     content=nc.content,
                     episode_id=episode_id,
+                    embedding=node_emb_blob,
                 )
         except Exception as e:
             sys.stderr.write(f"[persona-memory] add_node failed: {e}\n")

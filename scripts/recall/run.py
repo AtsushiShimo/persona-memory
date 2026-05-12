@@ -232,7 +232,23 @@ def recall(
             hit_episode_ids=[h.episode_id for h in episodes_hits],
         )
 
-    if not hits and not episodes_hits:
+    # 4.6: 議論ノードの近傍検索 (0.6.18 案 1 Phase B)
+    # Phase A2 が抽出した discussion_nodes (kind=topic/option/decision/...) を
+    # query_emb で近傍検索. 「直近どこで議論が止まっていたか」 系の query に
+    # 末端ノード即答を返す素材. edges 未整備のため embedding 単独で判定する.
+    # discussion_nodes table が無い古い DB では例外で抜けて空配列.
+    discussion_hits: list[dict] = []
+    try:
+        from scripts.discussion.graph import nearest_discussion_nodes
+        discussion_hits = nearest_discussion_nodes(conn, query_emb, top_k=3)
+    except sqlite3.OperationalError:
+        # discussion_nodes table が無い古い DB は無視 (upgrade 前)
+        pass
+    except Exception as e:
+        if debug_enabled():
+            sys.stderr.write(f"[persona-memory] discussion_nodes lookup failed: {e}\n")
+
+    if not hits and not episodes_hits and not discussion_hits:
         if debug_enabled():
             log_final_prompt("")
         return ""
@@ -258,18 +274,27 @@ def recall(
 
     if mode == "summarize":
         summary = summarize_recall(content, hits, episodes_hits, client, model=recall_model)
-        if not summary:
+        if not summary and not discussion_hits:
             if debug_enabled():
                 log_final_prompt("")
             return ""
-        additional_context = f"## 思い出した記憶\n{summary}"
+        additional_context = f"## 思い出した記憶\n{summary}" if summary else ""
     else:
         # index_* mode: ローカル LLM 不使用. hit を素直にインデックス化.
         additional_context = _format_index(hits, episodes_hits, mode=mode)
-        if not additional_context:
+        if not additional_context and not discussion_hits:
             if debug_enabled():
                 log_final_prompt("")
             return ""
+
+    # 0.6.18 Phase B: 議論ノードの直答を冒頭に挿入.
+    # main agent が「直近の議論はどこで止まったか」 を判断する手がかり.
+    if discussion_hits:
+        discussion_block = _format_discussion(discussion_hits)
+        additional_context = (
+            f"{discussion_block}\n\n{additional_context}".rstrip()
+            if additional_context else discussion_block
+        )
 
     # 0.6.7: total token budget の ceiling. score 降順の前提で末尾から落とす.
     if TOKEN_BUDGET > 0:
@@ -278,6 +303,28 @@ def recall(
     if debug_enabled():
         log_final_prompt(additional_context)
     return additional_context
+
+
+def _format_discussion(nodes: list[dict]) -> str:
+    """discussion_nodes 近傍 hit を main agent 向けに整形 (0.6.18 Phase B).
+
+    冒頭 1 件 (= 最近接) を強調表示し, 続く 2 件を補助的に並べる.
+    各ノードは kind / state / title (+ content snippet) を含む.
+    main agent が「直近の議論はどこで止まっていたか」 を判断するための直答.
+    """
+    if not nodes:
+        return ""
+    title_chars = 60
+    lines: list[str] = ["## 直近の議論 (議論グラフ)"]
+    for i, n in enumerate(nodes):
+        head = f"#{n['id']} [{n['kind']}/{n['state']}] {n['title']}"
+        body_parts = [head]
+        if n.get("content"):
+            snippet = n["content"].strip().replace("\n", " ")[:title_chars]
+            body_parts.append(f"  └ {snippet}")
+        prefix = "- " if i == 0 else "  · "
+        lines.append(prefix + "\n".join(body_parts))
+    return "\n".join(lines)
 
 
 def _format_index(hits, episodes_hits, mode: str = "index_titled") -> str:

@@ -21,7 +21,7 @@
 
 ---
 
-## 2. 現在の状態 (2026-05-12, version 0.6.17)
+## 2. 現在の状態 (2026-05-12, version 0.6.18)
 
 ### 動く機能
 
@@ -48,6 +48,9 @@
 | **想起トリガー学習 (0.6.12, 0.6.15)** | 過去参照表現を含む発話の (query_embedding, hit fact/episode ids) を `recall_triggers` に蓄積し、 類似 query に対し過去 hit を boost する **パーソナライズド recall**。 agentmemory の RRF を超える差別化軸 | `scripts/recall/triggers.py`, `scripts/recall/extract.py`, `scripts/recall/run.py` |
 | **議論グラフ (0.6.13, 0.6.17)** | `discussion_nodes` / `discussion_edges` で論点 / 検討案 / 採用判断 / 撤回を DAG として構造化。 write LLM が同一呼び出しで facts + nodes を抽出 (追加 LLM コール 0). 状態 (proposed/accepted/rejected/superseded/observed) で「忘れない」 を担保 | `scripts/discussion/graph.py`, `scripts/write/extract.py`, `scripts/write/run.py` |
 | **反事実記憶 (0.6.14, 0.6.16)** | `facts.reason_superseded` 列に撤回理由を保存。 write LLM が `reason` フィールドで抽出し、 recall で「『旧』 と言っていたが『理由』 のため撤回済」 を summarize prompt に提示 | `scripts/write/extract.py`, `scripts/write/persist.py`, `scripts/recall/search.py`, `scripts/recall/summarize.py` |
+| **議論ノード embedding + recall 統合 (0.6.18 Phase B)** | discussion_nodes に title+content の embedding を付与し、 recall パイプラインで query_emb 最近傍ノードを「## 直近の議論」 として additionalContext 冒頭に prefix. 「直近どこで議論が止まっていたか」 系の query に末端ノード即答 (edges 非依存). | `scripts/discussion/graph.py:nearest_discussion_nodes`, `scripts/recall/run.py`, `scripts/write/run.py` |
+| **遡及抽出 + upgrade 統合 (0.6.18)** | 0.6.17 以前 ingest 済の episode を write LLM で再抽出し discussion_nodes を救済 (facts は無変更). `/persona-memory:upgrade` 内 step 7 で自動実行 (PERSONA_UPGRADE_SKIP_BACKFILL=1 で skip 可) | `scripts/discussion/backfill.py`, `scripts/upgrade.py` |
+| **MCP write_fact 回帰修正 (0.6.18)** | `server/db.upsert_fact` の `ON CONFLICT(category, key)` が partial unique index と一致せず `OperationalError` で落ちていた回帰を `WHERE status = 'active'` 付き conflict target で修正 | `server/db.py`, `tests/test_db_schema.py:test_upsert_fact_via_server_db` |
 
 ### slash commands
 
@@ -299,4 +302,48 @@ persona-memory/
 
 ---
 
-最終更新: 2026-05-11 (version 0.5.25)
+## 11. 次回セッション開始時のフック (2026-05-12 batch resume)
+
+このセクションは **マスターがセッションクリアしてカサンドラが復帰した直後** の手順.
+順守すれば直近 11 commit (0.6.8 ~ 0.6.18) の文脈を 1 ターン以内に取り戻せる.
+
+### 11.1 まず読むもの (順序固定)
+1. `HANDOFF.md` Section 2 (動く機能表 ─ 0.6.8 以降の新行を確認)
+2. `HANDOFF.md` Section 7.1b (agentmemory 対抗 7 案の進捗ステータス)
+3. `git log --oneline -15` (このバッチの commit message を眺める = 設計判断ログ)
+
+### 11.2 未完了タスク (優先度順)
+1. **案 1 Phase C (議論グラフの edges 復活)** ─ 0.6.18 では LLM が relations を
+   出していないため `latest_decision_for_topic` の traversal は使えていない.
+   Phase C で extract.py の prompt に「nodes 間の relations 配列」 を足し、
+   add_edge を Phase A2 と同列で呼ぶ. **prompt 副作用に注意** ─ extract_facts
+   既存テスト全 pass を最優先で確認.
+2. **案 4-7 Phase A1** (任意): 人格条件付き embedding / Federation /
+   意図的失念 / 時間 filter. それぞれ独立に着手可.
+
+### 11.3 復帰時のお作法
+- 最初の発話で `git log --oneline -15` を 1 度だけ実行して context を取り戻す.
+- マスターから「あの議論どこまで?」 系の query が来たら **その場で MCP の
+  `search_memory` を呼んで補強検索** (boot 層 `persona/explicit_recall_via_mcp` 参照).
+  加えて 0.6.18 以降は recall に `## 直近の議論` ブロックが付与される (discussion_nodes 近傍検索) ─ そちらも参照.
+- 0.6.8 で plugin.json に mcpServers inline 追加済 = MCP は呼べる状態.
+  もし呼べなければ `/mcp` で `plugin:persona-memory:persona-memory ✓ connected · 9 tools`
+  になっているか確認 (= 認識されない場合は `/plugin update` の取得失敗を疑う).
+
+### 11.4 触ってはいけないもの
+- HANDOFF.md Section 7.1 の **v2 残タスク** (合意外着手厳禁) は引き続き保護.
+- マスター方針:「**忘れない**」 ─ 自動忘却 / Ebbinghaus 減衰 / consolidation
+  圧縮は採用しない. ranking boost や状態遷移 (state='superseded' に降格して残す)
+  は OK.
+- write LLM の prompt は副作用大. 修正する時は extract_facts 既存テストが全 pass
+  することを最優先で確認 (= 0.6.16/0.6.17 で同じ罠を踏みかけた, 0.6.18 では prompt 不変).
+
+### 11.5 引き渡しルール (2026-05-12 追加)
+- 機能を Phase 分割で実装する時, **ユーザー体験として完結する単位までは自走で詰める**.
+  Phase A だけ完成して「実機検証お願いします」 と振るのは禁止. ユニットテスト相当の検証は
+  自力で済ませ, master が体験できる状態 (例: 「Renju の続き呼び戻し」 が出る) まで
+  到達してから push する.
+
+---
+
+最終更新: 2026-05-12 (version 0.6.18)

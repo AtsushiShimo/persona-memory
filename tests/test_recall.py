@@ -500,3 +500,72 @@ def test_recall_trigger_boost_can_be_disabled(monkeypatch, db):
 
     monkeypatch.delenv("PERSONA_RECALL_TRIGGER_BOOST", raising=False)
     assert trigger_boost_enabled() is True  # default ON
+
+
+# ── 0.6.18 Phase B: discussion_nodes 近傍検索 ─────────────────────────────
+
+def test_recall_prefixes_discussion_nodes(db):
+    """近接する discussion_node があれば '## 直近の議論' が冒頭に出る."""
+    from scripts.discussion.graph import add_node
+    from scripts.shared.embedding import pack
+
+    query_vec = [1.0] + [0.0] * 767
+    add_node(
+        db, kind="topic", title="Renju の盤サイズ",
+        content="15x15 と 19x19 のどちらを採用するかで止まっている",
+        embedding=pack(query_vec),
+    )
+    db.commit()
+
+    client = FakeRecallClient(
+        keywords=["Renju"],
+        search_history=True,
+        summary="Renju の議論が直近で止まっています。",
+        embedding_map={},  # 発話全文は default_embedding=[1.0, 0...] に乗る
+        default_embedding=query_vec,
+    )
+    out = recall(db, "Renju の続きやろうか", client)
+    assert "## 直近の議論" in out
+    assert "Renju の盤サイズ" in out
+    # discussion ブロックが先 (additionalContext 冒頭) に来ること
+    assert out.index("## 直近の議論") < out.index("## 思い出した記憶") if "## 思い出した記憶" in out else True
+
+
+def test_recall_returns_discussion_only_when_no_facts(db):
+    """facts hit 無し + discussion_nodes hit 有り の時、 議論ブロックだけ返す."""
+    from scripts.discussion.graph import add_node
+    from scripts.shared.embedding import pack
+
+    query_vec = [1.0] + [0.0] * 767
+    add_node(
+        db, kind="decision", title="盤サイズは 15x15 に決定", state="accepted",
+        embedding=pack(query_vec),
+    )
+    db.commit()
+
+    client = FakeRecallClient(
+        keywords=[], search_history=False, summary="",
+        default_embedding=query_vec,
+    )
+    out = recall(db, "Renju 続き", client)
+    assert "## 直近の議論" in out
+    assert "盤サイズは 15x15 に決定" in out
+
+
+def test_recall_ignores_distant_discussion_nodes(db):
+    """cosine 距離 > 0.6 のノードは混入しない."""
+    from scripts.discussion.graph import add_node
+    from scripts.shared.embedding import pack
+
+    add_node(
+        db, kind="topic", title="関係ない議題",
+        embedding=pack([0.0] * 767 + [1.0]),  # 直交 → dist=1.0
+    )
+    db.commit()
+
+    client = FakeRecallClient(
+        keywords=[], summary="",
+        default_embedding=[1.0] + [0.0] * 767,
+    )
+    out = recall(db, "Renju 続き", client)
+    assert "## 直近の議論" not in out

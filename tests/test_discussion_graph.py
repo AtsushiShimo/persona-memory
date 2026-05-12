@@ -16,10 +16,12 @@ from scripts.discussion.graph import (
     add_edge,
     add_node,
     latest_decision_for_topic,
+    nearest_discussion_nodes,
     neighbors,
     supersede_node,
     transition_state,
 )
+from scripts.shared.embedding import pack
 from scripts.db.migrate import init_db
 
 
@@ -158,3 +160,41 @@ def test_node_can_link_to_episode(db):
         "SELECT episode_id FROM discussion_nodes WHERE id=?", (n,),
     ).fetchone()[0]
     assert linked == eid
+
+
+# 0.6.18 Phase B: nearest_discussion_nodes (embedding 近傍検索)
+def test_nearest_discussion_nodes_returns_closest_by_cosine(db):
+    """完全一致 embedding が最近接になる + max_distance で遠いものを除外."""
+    # 単純な 3 次元 embedding で挙動を確かめる
+    near = pack([1.0, 0.0, 0.0])
+    mid = pack([0.7, 0.7, 0.0])
+    far = pack([0.0, 0.0, 1.0])
+    n_near = add_node(db, kind="topic", title="Renju 直近", embedding=near)
+    n_mid = add_node(db, kind="topic", title="関連あり", embedding=mid)
+    add_node(db, kind="topic", title="無関係", embedding=far)
+    add_node(db, kind="topic", title="埋め込み無し")  # embedding NULL
+
+    out = nearest_discussion_nodes(db, [1.0, 0.0, 0.0], top_k=3, max_distance=0.6)
+    # 完全一致 → mid (cos sim 0.7, dist 0.3) → far (dist 1.0) は閾値超え弾く
+    # 埋め込み無しは候補外
+    ids = [n["id"] for n in out]
+    assert ids == [n_near, n_mid]
+    assert out[0]["distance"] < 1e-6  # 完全一致
+
+
+def test_nearest_discussion_nodes_filters_by_kind_and_state(db):
+    near = pack([1.0, 0.0, 0.0])
+    add_node(db, kind="topic", title="T", embedding=near)
+    add_node(db, kind="decision", title="D-proposed", embedding=near, state="proposed")
+    n_acc = add_node(db, kind="decision", title="D-accepted", embedding=near, state="accepted")
+
+    out = nearest_discussion_nodes(
+        db, [1.0, 0.0, 0.0], top_k=5,
+        kinds=["decision"], states=["accepted"],
+    )
+    assert [n["id"] for n in out] == [n_acc]
+
+
+def test_nearest_discussion_nodes_empty_query_returns_empty(db):
+    add_node(db, kind="topic", title="X", embedding=pack([1.0, 0.0]))
+    assert nearest_discussion_nodes(db, [], top_k=3) == []
