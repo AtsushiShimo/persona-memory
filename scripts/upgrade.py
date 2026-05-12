@@ -656,27 +656,6 @@ def upgrade(db_path: Path) -> dict[str, int]:
 
     finally:
         conn.close()
-
-    # 7. 議論ノードの遡及抽出 (0.6.18 Phase B)
-    #    0.6.17 以前に ingest 済みの episode は write LLM が議論ノード抽出を
-    #    含まなかったため discussion_nodes が空のまま. backfill で過去ログから
-    #    nodes を生成 (facts は触らない). LLM 呼び出しを伴うため別 conn で実行.
-    #    PERSONA_UPGRADE_SKIP_BACKFILL=1 で skip 可能.
-    counts["discussion_nodes_backfilled"] = 0
-    if os.environ.get("PERSONA_UPGRADE_SKIP_BACKFILL", "").strip() in ("", "0"):
-        try:
-            from scripts.discussion.backfill import backfill as _backfill
-            bf = _backfill(db_path, client=client)
-            counts["discussion_nodes_backfilled"] = bf["nodes_added"]
-            if bf["episodes_seen"] > 0:
-                print(
-                    f"  discussion_nodes backfill: "
-                    f"episodes_seen={bf['episodes_seen']}, "
-                    f"episodes_with_nodes={bf['episodes_with_nodes']}, "
-                    f"nodes_added={bf['nodes_added']}"
-                )
-        except Exception as e:
-            print(f"  WARN discussion_nodes backfill failed: {e}", file=sys.stderr)
     return counts
 
 
@@ -726,8 +705,7 @@ def main() -> None:
         f"lint_tables_added={counts['lint_tables_added']}, "
         f"facts_check_migrated={counts['facts_check_migrated']}, "
         f"persona_core_restored={counts['persona_core_restored']}, "
-        f"episodes_fts_built={counts['episodes_fts_built']}, "
-        f"discussion_nodes_backfilled={counts['discussion_nodes_backfilled']}"
+        f"episodes_fts_built={counts['episodes_fts_built']}"
     )
 
 
