@@ -207,3 +207,50 @@ def test_vec_tables_use_cosine_distance(db: sqlite3.Connection):
     assert abs(by_key["scaled_x"] - 0.0) < 1e-4, f"L2 ならここで非 0、cosine なら 0: {by_key['scaled_x']}"
     assert abs(by_key["orthogonal"] - 1.0) < 1e-4
     assert abs(by_key["opposite"] - 2.0) < 1e-4
+
+
+# ── 0.6.24 トピック記憶スキーマ ─────────────────────────────────────────
+
+def test_topic_tables_exist(db: sqlite3.Connection):
+    rows = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    for expected in ("topics", "topic_tags", "topic_relations", "topic_tag_embeddings"):
+        assert expected in rows, f"missing topic table: {expected}"
+
+
+def test_episodes_has_topic_id_column(db: sqlite3.Connection):
+    cols = {r[1] for r in db.execute("PRAGMA table_info(episodes)")}
+    assert "topic_id" in cols
+
+
+def test_topics_basic_crud(db: sqlite3.Connection):
+    db.execute("INSERT INTO topics(id, title, summary) VALUES (?,?,?)",
+               ("session-abc", "Renju 設計", "サイドバーUIとメンション設計の議論"))
+    db.execute("INSERT INTO topic_tags(topic_id, tag) VALUES (?,?)",
+               ("session-abc", "サイドバー UI"))
+    db.execute("INSERT INTO topic_tags(topic_id, tag) VALUES (?,?)",
+               ("session-abc", "メンション設計"))
+    db.commit()
+    n = db.execute("SELECT COUNT(*) FROM topic_tags WHERE topic_id=?",
+                   ("session-abc",)).fetchone()[0]
+    assert n == 2
+
+
+def test_topic_relations_basic(db: sqlite3.Connection):
+    db.execute("INSERT INTO topics(id, title) VALUES ('t1', 'A')")
+    db.execute("INSERT INTO topics(id, title) VALUES ('t2', 'B')")
+    db.execute("INSERT INTO topic_relations(from_topic_id, to_topic_id, kind) VALUES (?,?,?)",
+               ("t1", "t2", "派生"))
+    db.commit()
+    row = db.execute("SELECT kind FROM topic_relations WHERE from_topic_id='t1'").fetchone()
+    assert row[0] == "派生"
+
+
+def test_episode_can_be_linked_to_topic(db: sqlite3.Connection):
+    db.execute("INSERT INTO topics(id, title) VALUES ('t-x', 'X')")
+    db.execute(
+        "INSERT INTO episodes(role, content, session_id, topic_id) VALUES (?,?,?,?)",
+        ("user", "hello", "sess-x", "t-x"),
+    )
+    db.commit()
+    row = db.execute("SELECT topic_id FROM episodes WHERE content='hello'").fetchone()
+    assert row[0] == "t-x"

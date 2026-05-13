@@ -69,12 +69,15 @@ def fetch_unprocessed_episode_ids(conn: sqlite3.Connection) -> list[int]:
 
 def fetch_episode(conn: sqlite3.Connection, episode_id: int) -> dict | None:
     row = conn.execute(
-        "SELECT id, role, content, session_id FROM episodes WHERE id = ?",
+        "SELECT id, role, content, session_id, topic_id FROM episodes WHERE id = ?",
         (episode_id,),
     ).fetchone()
     if not row:
         return None
-    return {"id": row[0], "role": row[1], "content": row[2], "session_id": row[3]}
+    return {
+        "id": row[0], "role": row[1], "content": row[2],
+        "session_id": row[3], "topic_id": row[4],
+    }
 
 
 def fetch_buffer(
@@ -215,6 +218,23 @@ def process_episode(
             )
             cand.key = new_key
 
+    # 0.6.24 トピック記憶: tag 抽出 (light LLM 別コール).
+    # PERSONA_TOPIC_DISABLE / PERSONA_TAG_EXTRACT_DISABLE で bypass.
+    extracted_tags: list[str] = []
+    if (
+        episode.get("topic_id")
+        and os.environ.get("PERSONA_TOPIC_DISABLE", "").strip() != "1"
+        and os.environ.get("PERSONA_TAG_EXTRACT_DISABLE", "").strip() != "1"
+    ):
+        try:
+            from scripts.topic.tag_extract import extract_tags
+            extracted_tags = extract_tags(
+                episode["role"], episode["content"], buffer, client,
+            )
+        except Exception as e:
+            sys.stderr.write(f"[persona-memory] tag extraction failed: {e}\n")
+            extracted_tags = []
+
     # 各 candidate の embedding を pre-compute (DB write は Phase C)
     # value 単独ではなく `<category>/<key>: <value>` を embed する。
     # nomic-embed-text は短い・OOV-like な入力 (例: 「糖尿病」「MVP」「猫」) を
@@ -272,6 +292,14 @@ def process_episode(
                 )
         except Exception as e:
             sys.stderr.write(f"[persona-memory] add_node failed: {e}\n")
+
+    # 0.6.24 トピック記憶: 抽出した tag を topic_tags + topic_tag_embeddings へ.
+    if extracted_tags and episode.get("topic_id"):
+        try:
+            from scripts.topic.persist import save_tags
+            save_tags(conn, episode["topic_id"], extracted_tags, client, embed_model)
+        except Exception as e:
+            sys.stderr.write(f"[persona-memory] save_tags failed: {e}\n")
 
     if not candidates:
         return []

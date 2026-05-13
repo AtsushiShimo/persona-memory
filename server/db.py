@@ -338,6 +338,33 @@ def gc_episodes(
     return {"raw_deleted": len(raw_ids), "summary_deleted": len(summary_ids)}
 
 
+def bind_session_to_topic(*, session_id: str | None, topic_id: str) -> dict:
+    """continue_topic 実装. session_id 省略時は最新の episode から推定."""
+    with connect() as c:
+        row = c.execute(
+            "SELECT 1 FROM topics WHERE id = ?", (topic_id,),
+        ).fetchone()
+        if not row:
+            return {"error": f"no topic with id={topic_id}"}
+        if not session_id:
+            row2 = c.execute(
+                "SELECT session_id FROM episodes ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if not row2:
+                return {"error": "no session active (no episodes yet)"}
+            session_id = row2["session_id"]
+        c.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+            (f"topic_for_session_{session_id}", topic_id),
+        )
+        # last_active 更新
+        c.execute(
+            "UPDATE topics SET last_active_at = datetime('now', '+9 hours') WHERE id = ?",
+            (topic_id,),
+        )
+        return {"bound": True, "session_id": session_id, "topic_id": topic_id}
+
+
 def search_episodes(*, embedding_blob: bytes, top_k: int) -> list[dict]:
     with connect() as c:
         rows = c.execute(

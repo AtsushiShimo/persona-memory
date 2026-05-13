@@ -37,10 +37,15 @@ CREATE TABLE IF NOT EXISTS episodes (
   content     TEXT NOT NULL,
   summary     TEXT,
   session_id  TEXT NOT NULL,
+  -- 0.6.24 トピック記憶: 発話を topic に紐付け. SessionStart で発行された
+  -- topic_id (= 既定は session_id, continue_topic で既存 ID 継承可) を埋める.
+  -- 旧データ (列追加前) は NULL のまま.
+  topic_id    TEXT,
   timestamp   TEXT NOT NULL DEFAULT (datetime('now', '+9 hours'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_episodes_session   ON episodes(session_id);
+CREATE INDEX IF NOT EXISTS idx_episodes_topic     ON episodes(topic_id);
 CREATE INDEX IF NOT EXISTS idx_episodes_timestamp ON episodes(timestamp);
 
 -- ── FTS5 全文検索 (0.6.0 phase3): vec0 cosine の単一依存を解消する ──
@@ -172,3 +177,47 @@ CREATE TABLE IF NOT EXISTS discussion_edges (
 CREATE INDEX IF NOT EXISTS idx_discussion_edges_src  ON discussion_edges(src_id);
 CREATE INDEX IF NOT EXISTS idx_discussion_edges_dst  ON discussion_edges(dst_id);
 CREATE INDEX IF NOT EXISTS idx_discussion_edges_kind ON discussion_edges(edge_kind);
+
+-- ── 0.6.24 トピック記憶 (Topic Memory) ────────────────────────────────────
+-- 「話題ID + タグ」 の 2 階層で議論を構造化. 案 1 (discussion_nodes) は
+-- 単発判定で 0.5% しか抽出できなかったため、 セッション基盤の topic_id +
+-- 軽量 tag 抽出に置き換える設計.
+--
+-- topics: 1 セッション = 1 topic 基本. main agent が「前回の続き」 と判断
+--   したら continue_topic で既存 ID 継承.
+-- topic_tags: write LLM が turn 単位で抽出した短い名詞句. recall で発話
+--   embed と近傍検索 → topic_id 集計.
+-- topic_relations: Phase 4 で「派生 / 合流 / 撤回」 を辿るための DAG.
+-- episodes.topic_id: SessionStart で発行された ID を全 turn に紐付け.
+--
+-- 既存 facts/episodes vec 検索路 (casual recall) は無傷で並列維持.
+CREATE TABLE IF NOT EXISTS topics (
+  id              TEXT PRIMARY KEY,
+  title           TEXT,
+  summary         TEXT,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now', '+9 hours')),
+  last_active_at  TEXT NOT NULL DEFAULT (datetime('now', '+9 hours'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_topics_last_active ON topics(last_active_at);
+
+CREATE TABLE IF NOT EXISTS topic_tags (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  topic_id    TEXT NOT NULL REFERENCES topics(id),
+  tag         TEXT NOT NULL,
+  ts          TEXT NOT NULL DEFAULT (datetime('now', '+9 hours'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_topic_tags_topic_id ON topic_tags(topic_id);
+CREATE INDEX IF NOT EXISTS idx_topic_tags_tag      ON topic_tags(tag);
+
+CREATE TABLE IF NOT EXISTS topic_relations (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  from_topic_id  TEXT NOT NULL REFERENCES topics(id),
+  to_topic_id    TEXT NOT NULL REFERENCES topics(id),
+  kind           TEXT NOT NULL,
+  ts             TEXT NOT NULL DEFAULT (datetime('now', '+9 hours'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_topic_relations_from ON topic_relations(from_topic_id);
+CREATE INDEX IF NOT EXISTS idx_topic_relations_to   ON topic_relations(to_topic_id);

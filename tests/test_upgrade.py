@@ -472,3 +472,65 @@ def test_restore_persona_core_skips_keys_without_init_seed(db_path: Path):
         counts = upgrade(db_path)
     # init seed が無いので復元できない (skip)
     assert counts["persona_core_restored"] == 0
+
+
+def test_topic_tables_migration_adds_to_existing_db(tmp_path: Path):
+    """0.6.23 以前の DB を再現 → upgrade で topic 系テーブル + episodes.topic_id が追加される."""
+    db_path = tmp_path / "old.db"
+    init_db(db_path)
+    conn = connect(db_path)
+    try:
+        # 旧 DB を再現: topic 系テーブルと topic_id 列を削除
+        conn.execute("DROP TABLE IF EXISTS topics")
+        conn.execute("DROP TABLE IF EXISTS topic_tags")
+        conn.execute("DROP TABLE IF EXISTS topic_relations")
+        conn.execute("DROP TABLE IF EXISTS topic_tag_embeddings")
+        # episodes.topic_id 列を削除 (旧 DB を模擬)
+        conn.execute("CREATE TABLE episodes_old AS SELECT id, role, content, summary, session_id, timestamp FROM episodes")
+        conn.execute("DROP TABLE episodes")
+        conn.execute(
+            "CREATE TABLE episodes ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  role TEXT NOT NULL CHECK (role IN ('user','assistant')),"
+            "  content TEXT NOT NULL, summary TEXT,"
+            "  session_id TEXT NOT NULL,"
+            "  timestamp TEXT NOT NULL DEFAULT (datetime('now', '+9 hours'))"
+            ")"
+        )
+        conn.execute("INSERT INTO episodes SELECT * FROM episodes_old")
+        conn.execute("DROP TABLE episodes_old")
+        conn.commit()
+        # 確認: topic_id 列なし
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(episodes)")}
+        assert "topic_id" not in cols
+    finally:
+        conn.close()
+
+    # upgrade 実行
+    with patch("scripts.upgrade.OllamaClient") as Mock:
+        Mock.return_value.embed.return_value = []
+        counts = upgrade(db_path)
+    assert counts["topic_tables_added"] == 1
+    assert counts["episodes_topic_id_added"] == 1
+    assert counts["topic_tag_embeddings_added"] == 1
+
+    # 確認
+    conn = connect(db_path)
+    try:
+        rows = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for t in ("topics", "topic_tags", "topic_relations", "topic_tag_embeddings"):
+            assert t in rows
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(episodes)")}
+        assert "topic_id" in cols
+    finally:
+        conn.close()
+
+
+def test_topic_tables_migration_is_idempotent(db_path: Path):
+    """新規 DB に対しては no-op."""
+    with patch("scripts.upgrade.OllamaClient") as Mock:
+        Mock.return_value.embed.return_value = []
+        counts = upgrade(db_path)
+    assert counts["topic_tables_added"] == 0
+    assert counts["episodes_topic_id_added"] == 0
+    assert counts["topic_tag_embeddings_added"] == 0

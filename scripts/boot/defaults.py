@@ -112,6 +112,20 @@ DEFAULT_BOOT_FACTS: list[tuple[str, str, str, int]] = [
         8,
     ),
     (
+        "persona", "playbook_continue_topic",
+        "additionalContext に「## 関連する議論」 ブロックが付いていて、 そこに "
+        "提示された topic_id の議題が **明らかにユーザーの今の発話の続き** だと "
+        "判断したら、 最初の応答前に "
+        "`mcp__persona-memory__continue_topic(topic_id=...)` を呼ぶ。 "
+        "これで以降の発話が当該 topic に紐付き、 蓄積が続く。 "
+        "判断基準: ユーザーが『再開』『続き』『前に話した』 等を明示、 もしくは "
+        "発話内容と topic.summary の主題が一致している。 "
+        "曖昧な時は呼ばずに普通に応答する (誤継承で別話題に流入させない)。 "
+        "候補が複数あって絞り込めない時は、 recall 出力の "
+        "「## 候補確認」 ブロックの指示に従ってユーザーに聞き返す。",
+        8,
+    ),
+    (
         "rule", "forbid_auto_memory",
         "Claude Code 標準 memory 機構 (~/.claude/projects/<project>/memory/, "
         "MEMORY.md) を使わない。 記憶は別の場所に蓄積され、 両方使うと分散して "

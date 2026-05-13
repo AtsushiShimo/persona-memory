@@ -283,6 +283,31 @@ def delete_fact(fact_id: int) -> dict[str, Any]:
 
 
 @mcp.tool()
+def continue_topic(
+    topic_id: str,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    """Bind the current Claude Code session to an existing topic_id.
+
+    Use this when the user is resuming a past discussion ("Renju の話を再開
+    しよう", "前に話したあれの続き") and the recall pipeline has surfaced a
+    candidate topic_id (e.g. via the "## 関連する議論" block in
+    additionalContext). After binding, all subsequent episodes in this session
+    will be tagged with the chosen topic_id, letting the assistant accumulate
+    new turns on top of the prior topic's accumulated facts and tags.
+
+    Parameters:
+      topic_id: the existing topic to continue (must exist in `topics`).
+      session_id: the current Claude Code session id. If omitted, the most
+        recent session_id from `episodes` is used (= the live session).
+
+    Returns: {"bound": True, "session_id": "...", "topic_id": "..."} on
+    success, or {"error": "..."} if the topic doesn't exist.
+    """
+    return db.bind_session_to_topic(session_id=session_id, topic_id=topic_id)
+
+
+@mcp.tool()
 async def append_episode(
     role: str,
     content: str,

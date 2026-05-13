@@ -65,6 +65,29 @@ def spawn_lint(fact_ids: list[int], trigger: str = "write_tail") -> None:
         pass
 
 
+def spawn_topic_summary_backfill() -> None:
+    """SessionStart fallback: summary 未生成の topic を 1 件遡及生成する.
+
+    PERSONA_TOPIC_DISABLE / PERSONA_TOPIC_SUMMARY_DISABLE で opt-out.
+    detach 起動なので session 開始体感はブロックしない.
+    """
+    if os.environ.get("PERSONA_TOPIC_DISABLE", "").strip() == "1":
+        return
+    if os.environ.get("PERSONA_TOPIC_SUMMARY_DISABLE", "").strip() == "1":
+        return
+    try:
+        subprocess.Popen(
+            [sys.executable, "-m", "scripts.topic.summarize_one_pending"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except Exception:
+        pass
+
+
 def spawn_prewarm() -> None:
     """SessionStart で Ollama heavy + embed モデルを background で warm-up.
 

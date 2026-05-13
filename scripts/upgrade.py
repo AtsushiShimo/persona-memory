@@ -30,7 +30,7 @@ from scripts.boot.defaults import (
     DEPRECATED_BOOT_FACTS,
     PERSONA_CORE_KEYS,
 )
-from scripts.db.connection import connect
+from scripts.db.connection import EMBEDDING_DIM, connect
 from scripts.shared.embedding import pack
 from scripts.shared.ollama import OllamaClient
 
@@ -455,6 +455,83 @@ def _ensure_discussion_graph_tables(conn) -> bool:
     return after > before
 
 
+def _ensure_topic_tables(conn) -> bool:
+    """0.6.24 トピック記憶: topics / topic_tags / topic_relations を既存 DB に migrate.
+
+    schema.sql は IF NOT EXISTS なので idempotent.
+    戻り値: いずれか新規 create された場合 True.
+    """
+    schema_file = Path(__file__).resolve().parent / "db" / "schema.sql"
+    text = schema_file.read_text(encoding="utf-8")
+    snippets = []
+    for stmt in text.split(";"):
+        s = stmt.strip()
+        if not s:
+            continue
+        target = (
+            ("topics" in s and "CREATE TABLE" in s and "topic_tags" not in s
+             and "topic_relations" not in s)
+        ) or (
+            "topic_tags" in s and "CREATE TABLE" in s
+        ) or (
+            "topic_relations" in s and "CREATE TABLE" in s
+        ) or (
+            "idx_topics_" in s and "CREATE INDEX" in s
+        ) or (
+            "idx_topic_tags_" in s and "CREATE INDEX" in s
+        ) or (
+            "idx_topic_relations_" in s and "CREATE INDEX" in s
+        )
+        if target:
+            snippets.append(s + ";")
+    before = conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master "
+        "WHERE type='table' AND name IN ('topics','topic_tags','topic_relations')"
+    ).fetchone()[0]
+    for s in snippets:
+        conn.execute(s)
+    conn.commit()
+    after = conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master "
+        "WHERE type='table' AND name IN ('topics','topic_tags','topic_relations')"
+    ).fetchone()[0]
+    return after > before
+
+
+def _ensure_episodes_topic_id_column(conn) -> bool:
+    """0.6.24: episodes.topic_id を既存 DB に追加.
+
+    SQLite の ALTER TABLE ADD COLUMN. 旧データは NULL のまま.
+    戻り値: 新規追加された場合 True.
+    """
+    cols = conn.execute("PRAGMA table_info(episodes)").fetchall()
+    names = {row[1] for row in cols}
+    if "topic_id" in names:
+        return False
+    conn.execute("ALTER TABLE episodes ADD COLUMN topic_id TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_episodes_topic ON episodes(topic_id)")
+    conn.commit()
+    return True
+
+
+def _ensure_topic_tag_embeddings(conn, embedding_dim: int) -> bool:
+    """0.6.24: topic_tag_embeddings (vec0 仮想テーブル) を既存 DB に作成."""
+    before = conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master "
+        "WHERE type='table' AND name='topic_tag_embeddings'"
+    ).fetchone()[0]
+    if before:
+        return False
+    conn.execute(
+        f"CREATE VIRTUAL TABLE IF NOT EXISTS topic_tag_embeddings USING vec0("
+        f"  topic_tag_id INTEGER PRIMARY KEY,"
+        f"  embedding FLOAT[{embedding_dim}] distance_metric=cosine"
+        f")"
+    )
+    conn.commit()
+    return True
+
+
 def _migrate_config_env_to_relative(db_path: Path) -> str:
     """config.env の PERSONA_MEMORY_DB を絶対パスから ${CLAUDE_PROJECT_DIR} 基準に書き換える.
 
@@ -527,6 +604,9 @@ def upgrade(db_path: Path) -> dict[str, int]:
         "recall_triggers_added": 0,
         "discussion_graph_added": 0,
         "reason_superseded_added": 0,
+        "topic_tables_added": 0,
+        "episodes_topic_id_added": 0,
+        "topic_tag_embeddings_added": 0,
     }
     conn = connect(db_path)
     client = OllamaClient()
@@ -550,6 +630,15 @@ def upgrade(db_path: Path) -> dict[str, int]:
         if _ensure_reason_superseded_column(conn):
             counts["reason_superseded_added"] = 1
             print("  added facts.reason_superseded column (counterfactual memory)")
+        if _ensure_topic_tables(conn):
+            counts["topic_tables_added"] = 1
+            print("  added topic memory tables (topics, topic_tags, topic_relations)")
+        if _ensure_episodes_topic_id_column(conn):
+            counts["episodes_topic_id_added"] = 1
+            print("  added episodes.topic_id column")
+        if _ensure_topic_tag_embeddings(conn, EMBEDDING_DIM):
+            counts["topic_tag_embeddings_added"] = 1
+            print("  added topic_tag_embeddings vec0 table")
         # 1. 廃止された default を active → superseded に降格
         for category, key in DEPRECATED_BOOT_FACTS:
             row = conn.execute(

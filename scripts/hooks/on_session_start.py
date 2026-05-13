@@ -19,7 +19,9 @@ from scripts.boot.inject import (
     format_boot_facts,
 )
 from scripts.db.connection import connect
-from scripts.hooks.spawn import spawn_prewarm, spawn_write
+from scripts.hooks.spawn import (
+    spawn_prewarm, spawn_topic_summary_backfill, spawn_write,
+)
 from scripts.shared.env import get_db_path
 from scripts.write.run import fetch_unprocessed_episode_ids
 
@@ -68,6 +70,9 @@ def main() -> int:
     # Ollama heavy + embed モデルを background で warm-up.
     # 最初の発話時の cold start (30-60s) を回避. fail-open.
     spawn_prewarm()
+
+    # 0.6.24: summary 未生成の topic を 1 件遡及生成 (背景, fail-open).
+    spawn_topic_summary_backfill()
 
     # 未処理があれば detach で write を流す (本処理 = 注入は完了済み)
     if pending_ids:

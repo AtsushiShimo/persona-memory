@@ -248,7 +248,20 @@ def recall(
         if debug_enabled():
             sys.stderr.write(f"[persona-memory] discussion_nodes lookup failed: {e}\n")
 
-    if not hits and not episodes_hits and not discussion_hits:
+    # 4.7: topic_tag 近傍検索 (0.6.24 トピック記憶)
+    # PERSONA_TOPIC_DISABLE=1 で完全 bypass.
+    topic_candidates: list = []
+    if os.environ.get("PERSONA_TOPIC_DISABLE", "").strip() != "1":
+        try:
+            from scripts.topic.search import search_topic_candidates
+            topic_candidates = search_topic_candidates(conn, query_emb)
+        except sqlite3.OperationalError:
+            pass  # topic_tag_embeddings 無い古い DB
+        except Exception as e:
+            if debug_enabled():
+                sys.stderr.write(f"[persona-memory] topic search failed: {e}\n")
+
+    if not hits and not episodes_hits and not discussion_hits and not topic_candidates:
         if debug_enabled():
             log_final_prompt("")
         return ""
@@ -274,7 +287,7 @@ def recall(
 
     if mode == "summarize":
         summary = summarize_recall(content, hits, episodes_hits, client, model=recall_model)
-        if not summary and not discussion_hits:
+        if not summary and not discussion_hits and not topic_candidates:
             if debug_enabled():
                 log_final_prompt("")
             return ""
@@ -282,7 +295,7 @@ def recall(
     else:
         # index_* mode: ローカル LLM 不使用. hit を素直にインデックス化.
         additional_context = _format_index(hits, episodes_hits, mode=mode)
-        if not additional_context and not discussion_hits:
+        if not additional_context and not discussion_hits and not topic_candidates:
             if debug_enabled():
                 log_final_prompt("")
             return ""
@@ -295,6 +308,20 @@ def recall(
             f"{discussion_block}\n\n{additional_context}".rstrip()
             if additional_context else discussion_block
         )
+
+    # 0.6.24 トピック記憶: 関連 topic を冒頭に挿入.
+    if topic_candidates:
+        try:
+            from scripts.topic.search import format_topic_block
+            topic_block = format_topic_block(topic_candidates)
+            if topic_block:
+                additional_context = (
+                    f"{topic_block}\n\n{additional_context}".rstrip()
+                    if additional_context else topic_block
+                )
+        except Exception as e:
+            if debug_enabled():
+                sys.stderr.write(f"[persona-memory] topic format failed: {e}\n")
 
     # 0.6.7: total token budget の ceiling. score 降順の前提で末尾から落とす.
     if TOKEN_BUDGET > 0:

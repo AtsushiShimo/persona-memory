@@ -33,6 +33,13 @@ def init_db(db_path: Path, embedding_dim: int = EMBEDDING_DIM) -> None:
             f"  embedding FLOAT[{embedding_dim}] distance_metric=cosine"
             f")"
         )
+        # 0.6.24 トピック記憶: tag 単体を embed → topic_id 集計用.
+        conn.execute(
+            f"CREATE VIRTUAL TABLE IF NOT EXISTS topic_tag_embeddings USING vec0("
+            f"  topic_tag_id INTEGER PRIMARY KEY,"
+            f"  embedding FLOAT[{embedding_dim}] distance_metric=cosine"
+            f")"
+        )
 
         conn.execute(
             "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",

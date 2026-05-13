@@ -7,7 +7,7 @@ from pathlib import Path
 import sqlite_vec
 
 EMBEDDING_DIM = 768  # nomic-embed-text default
-SCHEMA_VERSION = "4"  # added conflicts + lint_log tables
+SCHEMA_VERSION = "5"  # 0.6.24: topics / topic_tags / topic_relations / episodes.topic_id
 
 
 def connect(db_path: Path, timeout: float = 30.0) -> sqlite3.Connection:
