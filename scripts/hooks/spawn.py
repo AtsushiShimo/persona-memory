@@ -63,3 +63,24 @@ def spawn_lint(fact_ids: list[int], trigger: str = "write_tail") -> None:
     except Exception:
         # fail-open: lint 失敗でも write 結果は確定済み
         pass
+
+
+def spawn_prewarm() -> None:
+    """SessionStart で Ollama heavy + embed モデルを background で warm-up.
+
+    PERSONA_PREWARM_DISABLE=1 でテスト / opt-out.
+    fail-open: ollama 未起動などは静かに諦める (子プロセス側で吸収).
+    """
+    if os.environ.get("PERSONA_PREWARM_DISABLE") == "1":
+        return
+    try:
+        subprocess.Popen(
+            [sys.executable, "-m", "scripts.shared.prewarm"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except Exception:
+        pass

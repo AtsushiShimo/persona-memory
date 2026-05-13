@@ -15,7 +15,12 @@ from typing import Protocol
 import httpx
 
 DEFAULT_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-DEFAULT_TIMEOUT = float(os.environ.get("PERSONA_OLLAMA_TIMEOUT", "60.0"))
+# 60s では gemma3:12b の cold load (~30-60s) が間に合わず timeout する事例あり.
+# warm 時は 1-3s で完結するので 180s でも実害は無い.
+DEFAULT_TIMEOUT = float(os.environ.get("PERSONA_OLLAMA_TIMEOUT", "180.0"))
+# Ollama 既定の 5m では idle 後 unload → 次回 cold start 30-60s 待ち. session 単位で
+# 持続させたいので 30m に延長 (PERSONA_OLLAMA_KEEP_ALIVE で上書き可, "-1" で永続).
+DEFAULT_KEEP_ALIVE = os.environ.get("PERSONA_OLLAMA_KEEP_ALIVE", "30m")
 
 
 class LLMClient(Protocol):
@@ -31,7 +36,10 @@ class OllamaClient:
     def generate(self, model: str, prompt: str, num_ctx: int | None = None) -> str:
         # num_ctx: per-request context window (token). 指定すると KV cache 配分が
         # 縮み、モデル併存時の memory pressure を緩和できる. 既定 None = モデル既定値.
-        payload: dict = {"model": model, "prompt": prompt, "stream": False}
+        payload: dict = {
+            "model": model, "prompt": prompt, "stream": False,
+            "keep_alive": DEFAULT_KEEP_ALIVE,
+        }
         if num_ctx is not None:
             payload["options"] = {"num_ctx": num_ctx}
         r = httpx.post(
@@ -52,7 +60,7 @@ class OllamaClient:
             return []
         r = httpx.post(
             f"{self.host}/api/embeddings",
-            json={"model": model, "prompt": safe},
+            json={"model": model, "prompt": safe, "keep_alive": DEFAULT_KEEP_ALIVE},
             timeout=self.timeout,
         )
         r.raise_for_status()

@@ -22,9 +22,11 @@ RECALL_MODEL = os.environ.get(
     os.environ.get("PERSONA_HEAVY_MODEL", "gemma3:12b"),
 )
 
-# recall analyze prompt は 2-3k token に収まる. num_ctx を絞って KV cache を縮小.
+# recall / write / lint で num_ctx を揃えると Ollama が単一インスタンスを共有でき、
+# モデル swap (cold load 30-60s) が起きない. write の buffer 10 turn が乗る
+# 16384 を共通既定値とする (recall analyze は 2-3k で収まるが揃える優先).
 # PERSONA_RECALL_NUM_CTX で上書き可能.
-RECALL_NUM_CTX = int(os.environ.get("PERSONA_RECALL_NUM_CTX", "8192"))
+RECALL_NUM_CTX = int(os.environ.get("PERSONA_RECALL_NUM_CTX", "16384"))
 
 
 @dataclass

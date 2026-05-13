@@ -30,8 +30,8 @@ JUDGE_MODEL = os.environ.get(
     "PERSONA_LINT_MODEL",
     os.environ.get("PERSONA_HEAVY_MODEL", "gemma3:12b"),
 )
-# lint prompt は 2 value 比較のみで小さい. KV cache を絞って共有モデルとの併存を促す.
-LINT_NUM_CTX = int(os.environ.get("PERSONA_LINT_NUM_CTX", "8192"))
+# num_ctx を recall / write と揃えて Ollama 単一インスタンス共有 (詳細は recall.extract).
+LINT_NUM_CTX = int(os.environ.get("PERSONA_LINT_NUM_CTX", "16384"))
 EMBED_MODEL = os.environ.get("PERSONA_EMBED_MODEL", "nomic-embed-text")
 NEIGHBOR_TOP_K = int(os.environ.get("PERSONA_LINT_NEIGHBOR_TOP_K", "5"))
 # 0.5 では過剰検出 (異 category / 別属性同士でも heavy LLM が「矛盾」 と
