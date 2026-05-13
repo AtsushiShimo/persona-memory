@@ -74,6 +74,29 @@ def maybe_cozo_full_recall(
         return ""
 
 
+def maybe_cozo_topic_shift(
+    sqlite_db: Path, session_id: str, new_prompt: str,
+) -> str | None:
+    """Cozo DB が存在し disable されていなければ話題シフト判定 → 必要なら topic 切替.
+
+    戻り値: 新 topic_id (切替時) or 既存 topic_id (継続) or None (bypass).
+    """
+    if cozo_disabled() or not cozo_db_present(sqlite_db):
+        return None
+    try:
+        from scripts.db_cozo.connection import init_db
+        from scripts.db_cozo.topic_shift import maybe_split_topic
+        from scripts.shared.ollama import OllamaClient
+        client = init_db(cozo_db_path_for(sqlite_db))
+        topic_id, _judgment = maybe_split_topic(
+            client, session_id, new_prompt, OllamaClient(),
+        )
+        return topic_id
+    except Exception as e:
+        sys.stderr.write(f"[persona-memory] cozo topic shift failed: {e}\n")
+        return None
+
+
 def maybe_cozo_save_episode(
     sqlite_db: Path, role: str, content: str, session_id: str,
 ) -> int | None:

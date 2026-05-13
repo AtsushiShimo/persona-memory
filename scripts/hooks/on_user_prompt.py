@@ -72,10 +72,15 @@ def main() -> int:
             # ── Cozo 経路 (.cozo.db 存在時 → メイン recall として使う) ──
             cozo_section = ""
             from scripts.db_cozo.wire import (
-                cozo_db_present, maybe_cozo_full_recall, maybe_cozo_save_episode,
+                cozo_db_present, maybe_cozo_full_recall,
+                maybe_cozo_save_episode, maybe_cozo_topic_shift,
             )
             cozo_active = cozo_db_present(db_path)
             try:
+                # Phase 4: 新発話を保存する前に話題シフトを判定して topic_id を決定.
+                # 同 session 内で話題が変わったら自動的に新 topic に切替.
+                if cozo_active:
+                    maybe_cozo_topic_shift(db_path, session_id, prompt)
                 # Cozo 側にも raw 保存 (新規発話を Cozo にも流す).
                 # write LLM は当面 SQLite なので両方保存. 将来は Cozo 単独化予定.
                 maybe_cozo_save_episode(
