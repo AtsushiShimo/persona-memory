@@ -60,9 +60,12 @@ _PROMPT_TEMPLATE = """\
 state:
 - proposed (検討中) / accepted (採用) / rejected (却下) / superseded (上書きされた) / observed (中立観察)
 
-直前ノードへの関係性 prev_relation (この発話が、 直前の議論ノードに対してどういう関係か):
-- 賛同 / 反論 / 派生 / 決定 (検討案を採用する判断) / 次バトン (次の論点を投げる) /
-  観察 / 結論 / 質問 / 回答 / 撤回 / null (関係なし or 流れの先頭)
+{prev_section}
+**直前ノードへの関係性 prev_relation** — 上の「直前ノード」 に対して今回の発話が
+どういう関係か:
+- 賛同 / 反論 / 派生 / 決定 (option→decision の採用) / 次バトン (次論点投げ) /
+  観察 / 結論 / 質問 / 回答 / 撤回
+- 直前ノードが無い、 または明らかに別話題なら null
 
 直近の会話:
 {buffer}
@@ -78,12 +81,25 @@ title は 20 字以内. content は 100 字以内 (任意).
 """
 
 
-def build_prompt(role: str, content: str, buffer: list[dict]) -> str:
+def build_prompt(
+    role: str, content: str, buffer: list[dict],
+    prev_node: dict | None = None,
+) -> str:
     if buffer:
         buf = "\n".join(f"[{m.get('role','?')}] {m.get('content','')}" for m in buffer)
     else:
         buf = "(なし)"
-    return _PROMPT_TEMPLATE.format(buffer=buf, role=role, content=content)
+    if prev_node:
+        prev_section = (
+            f"**直前ノード** (同じ話題で直前に記録された議論ノード):\n"
+            f"  #{prev_node.get('id', '?')} [{prev_node.get('kind', '?')}/"
+            f"{prev_node.get('state', '?')}] {prev_node.get('title', '')}\n"
+        )
+    else:
+        prev_section = "**直前ノード**: なし (この発話が流れの先頭)\n"
+    return _PROMPT_TEMPLATE.format(
+        buffer=buf, role=role, content=content, prev_section=prev_section,
+    )
 
 
 def parse_node(text: str) -> NodeCandidate | None:
@@ -130,8 +146,9 @@ def parse_node(text: str) -> NodeCandidate | None:
 def extract_node_with_relation(
     role: str, content: str, buffer: list[dict],
     client: LLMClient, model: str = GRAPH_MODEL,
+    prev_node: dict | None = None,
 ) -> NodeCandidate | None:
-    prompt = build_prompt(role, content, buffer)
+    prompt = build_prompt(role, content, buffer, prev_node=prev_node)
     try:
         response = client.generate(model, prompt, num_ctx=GRAPH_NUM_CTX)
     except Exception:

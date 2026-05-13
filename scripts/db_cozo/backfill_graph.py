@@ -45,15 +45,30 @@ def _is_likely_empty(role: str, content: str | None) -> bool:
     return False
 
 
-def _episodes_pending(client: Client) -> list[dict]:
-    """既に discussion_node が紐付いている episode は skip."""
-    res = client.run("""
+def _episodes_pending(
+    client: Client, since_episode_id: int | None = None,
+) -> list[dict]:
+    """既に discussion_node が紐付いている episode は skip.
+
+    since_episode_id: 指定すると id >= 該当値だけ.
+    """
+    if since_episode_id is None:
+        res = client.run("""
 ?[id, role, content, session_id, topic_id] :=
     *episode{id, role, content, session_id, topic_id},
     not had_node[id]
 had_node[ep] := *discussion_node{episode_id: ep}
 :order id
-    """)
+        """)
+    else:
+        res = client.run("""
+?[id, role, content, session_id, topic_id] :=
+    *episode{id, role, content, session_id, topic_id},
+    id >= $sid,
+    not had_node[id]
+had_node[ep] := *discussion_node{episode_id: ep}
+:order id
+        """, {"sid": since_episode_id})
     return [
         {"id": r[0], "role": r[1], "content": r[2],
          "session_id": r[3], "topic_id": r[4]}
@@ -82,18 +97,15 @@ def backfill_one(
                 {"eid": episode["id"], "tid": topic_id},
             )
     buf = fetch_buffer(client, episode["id"], 5, session_id=episode["session_id"])
+    # 直前 node を LLM の手がかりとして渡す + 後で edge 接続元に再利用.
+    prev = get_last_node_in_topic(client, topic_id)
     nc = extract_node_with_relation(
-        episode["role"], episode["content"], buf, llm,
+        episode["role"], episode["content"], buf, llm, prev_node=prev,
     )
     if nc is None:
         return None, None
     if dry_run:
         return -1, nc.prev_relation
-
-    # 重要: 前 node 参照は新 node を追加する前に取る (= 自分自身を引かないため)
-    prev = None
-    if nc.prev_relation:
-        prev = get_last_node_in_topic(client, topic_id)
 
     # embedding (title + content)
     emb_text = nc.title
@@ -111,7 +123,7 @@ def backfill_one(
         embedding=embedding if embedding else None,
     )
     edge_kind = None
-    if prev and prev["id"] != nid:
+    if nc.prev_relation and prev and prev["id"] != nid:
         add_edge(client, prev["id"], nid, nc.prev_relation)
         edge_kind = nc.prev_relation
     return nid, edge_kind
@@ -120,10 +132,11 @@ def backfill_one(
 def backfill(
     db_path: Path, limit: int | None = None, dry_run: bool = False,
     progress: bool = True, llm: LLMClient | None = None,
+    since_episode_id: int | None = None,
 ) -> dict:
     client = init_db(db_path)
     cli = llm or OllamaClient()
-    eps = _episodes_pending(client)
+    eps = _episodes_pending(client, since_episode_id=since_episode_id)
     if limit is not None:
         eps = eps[:limit]
     total = len(eps)
@@ -158,6 +171,7 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Backfill discussion graph in Cozo DB")
     p.add_argument("--db", required=True, type=Path)
     p.add_argument("--limit", type=int, default=None)
+    p.add_argument("--since-episode-id", type=int, default=None)
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--no-progress", action="store_true")
     args = p.parse_args(argv)
@@ -167,6 +181,7 @@ def main(argv: list[str] | None = None) -> int:
     out = backfill(
         args.db, limit=args.limit, dry_run=args.dry_run,
         progress=not args.no_progress,
+        since_episode_id=args.since_episode_id,
     )
     print(f"  episodes_seen: {out['episodes_seen']}")
     print(f"  nodes_added: {out['nodes_added']}")
