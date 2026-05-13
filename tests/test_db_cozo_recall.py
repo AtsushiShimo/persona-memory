@@ -9,9 +9,11 @@ from scripts.db_cozo.connection import EMBEDDING_DIM, init_db, next_id
 from scripts.db_cozo.discussion import add_edge, add_node
 from scripts.db_cozo.recall import (
     TopicCandidate,
+    _compute_score,
     aggregate_topic_candidates,
     format_flow_block,
     format_multi_candidates_block,
+    has_clear_winner,
     recall_topic_flow,
 )
 from scripts.db_cozo.repo import (
@@ -135,3 +137,62 @@ def test_recall_topic_flow_returns_flow_when_single_topic_hit(client):
     assert "Renju 設計" in out
     assert "次論点 4 つ提示" in out
     assert "## 関連する議論" in out
+
+
+# ── ranking improvements ──
+
+def test_compute_score_increases_with_hit_count():
+    a = _compute_score(1, 0.5, None, None)
+    b = _compute_score(3, 0.5, None, None)
+    assert b > a
+
+
+def test_compute_score_decreases_with_distance():
+    a = _compute_score(2, 0.1, None, None)  # 近い
+    b = _compute_score(2, 0.5, None, None)  # 遠い
+    assert a > b
+
+
+def test_compute_score_recency_bonus():
+    a = _compute_score(2, 0.3, "2026-05-13 12:00:00", "2026-05-14 12:00:00")  # 1 日前
+    b = _compute_score(2, 0.3, "2025-01-01 12:00:00", "2026-05-14 12:00:00")  # 1 年以上前
+    assert a > b
+
+
+def test_has_clear_winner_with_tied_scores():
+    cs = [
+        TopicCandidate("a", "A", None, ["x"], 5, 0.1, score=5.5),
+        TopicCandidate("b", "B", None, ["y"], 5, 0.1, score=5.5),
+    ]
+    assert not has_clear_winner(cs, margin=0.1)
+
+
+def test_has_clear_winner_with_strong_top():
+    cs = [
+        TopicCandidate("a", "A", None, ["x"], 8, 0.1, score=9.0),
+        TopicCandidate("b", "B", None, ["y"], 3, 0.5, score=3.5),
+    ]
+    assert has_clear_winner(cs, margin=0.2)
+
+
+def test_has_clear_winner_single_candidate():
+    cs = [TopicCandidate("a", "A", None, ["x"], 1, 0.1, score=1.5)]
+    assert has_clear_winner(cs)
+
+
+def test_has_clear_winner_empty():
+    assert not has_clear_winner([])
+
+
+def test_aggregate_uses_recency_to_break_tie():
+    """同 hit_count でも last_active_at 直近の方が score 高くなる."""
+    hits = [
+        {"topic_id": "old", "tag": "x", "distance": 0.2},
+        {"topic_id": "new", "tag": "x", "distance": 0.2},
+    ]
+    info = {
+        "old": {"title": None, "summary": None, "last_active_at": "2025-01-01 00:00:00"},
+        "new": {"title": None, "summary": None, "last_active_at": "2026-05-13 12:00:00"},
+    }
+    out = aggregate_topic_candidates(hits, info, now_ts="2026-05-14 12:00:00")
+    assert out[0].topic_id == "new"

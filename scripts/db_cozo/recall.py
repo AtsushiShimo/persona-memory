@@ -32,25 +32,71 @@ class TopicCandidate:
     matched_tags: list[str] = field(default_factory=list)
     hit_count: int = 0
     best_distance: float = 9.0
+    last_active_at: str | None = None
+    score: float = 0.0  # 複合スコア (高いほど本命)
+
+
+def _compute_score(
+    hit_count: int, best_distance: float,
+    last_active_at: str | None, now_ts: str | None,
+    unique_tag_bonus: float = 0.0,
+) -> float:
+    """複合スコア: hit が多く / 距離が近く / 直近に活発なほど高い.
+
+    - hit_count: そのまま (主要 signal)
+    - distance penalty: (1 - best_distance) × 3 を加算 (差を強調)
+    - recency bonus: last_active_at が直近 (= 過去 7 日以内) なら +0.5
+                    過去 30 日以内なら +0.2. それ以上は 0.
+    - unique_tag_bonus: そのトピックでしか使われていないタグの数 × 0.5
+      (= 同じタグが多 topic に付いている場合は noise, 専有タグは strong)
+    """
+    score = float(hit_count)
+    score += max(0.0, 1.0 - best_distance) * 3.0
+    score += unique_tag_bonus
+    if last_active_at and now_ts:
+        try:
+            from datetime import datetime
+            la = datetime.strptime(last_active_at, "%Y-%m-%d %H:%M:%S")
+            now = datetime.strptime(now_ts, "%Y-%m-%d %H:%M:%S")
+            days = (now - la).days
+            if days <= 7:
+                score += 0.5
+            elif days <= 30:
+                score += 0.2
+        except Exception:
+            pass
+    return score
 
 
 def aggregate_topic_candidates(
     tag_hits: list[dict], topics_info: dict[str, dict],
-    max_topics: int = 3,
+    max_topics: int = 3, now_ts: str | None = None,
 ) -> list[TopicCandidate]:
-    """tag hit を topic_id で集約 (同 topic に複数 hit = strong signal)."""
+    """tag hit を topic_id で集約し、 複合スコア (hit + distance + recency + tag uniqueness) で並べる."""
     by_topic: dict[str, dict] = {}
+    # tag → どの topic に出現したかを集計 (uniqueness 計算用)
+    tag_to_topics: dict[str, set[str]] = {}
     for h in tag_hits:
         tid = h["topic_id"]
+        tag = h["tag"]
         rec = by_topic.setdefault(tid, {"hits": 0, "best": 9.0, "tags": []})
         rec["hits"] += 1
         if h["distance"] < rec["best"]:
             rec["best"] = h["distance"]
-        if h["tag"] not in rec["tags"]:
-            rec["tags"].append(h["tag"])
+        if tag not in rec["tags"]:
+            rec["tags"].append(tag)
+        tag_to_topics.setdefault(tag, set()).add(tid)
+    if now_ts is None:
+        from datetime import datetime, timedelta, timezone
+        now_ts = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d %H:%M:%S")
     out = []
     for tid, rec in by_topic.items():
-        info = topics_info.get(tid, {"title": None, "summary": None})
+        # この topic でしか出現していない tag の数を数える
+        unique_tags = sum(
+            1 for t in rec["tags"] if len(tag_to_topics.get(t, set())) == 1
+        )
+        info = topics_info.get(tid, {"title": None, "summary": None,
+                                     "last_active_at": None})
         out.append(TopicCandidate(
             topic_id=tid,
             title=info.get("title"),
@@ -58,9 +104,33 @@ def aggregate_topic_candidates(
             matched_tags=rec["tags"],
             hit_count=rec["hits"],
             best_distance=rec["best"],
+            last_active_at=info.get("last_active_at"),
+            score=_compute_score(
+                rec["hits"], rec["best"],
+                info.get("last_active_at"), now_ts,
+                unique_tag_bonus=unique_tags * 0.5,
+            ),
         ))
-    out.sort(key=lambda c: (-c.hit_count, c.best_distance))
+    out.sort(key=lambda c: -c.score)
     return out[:max_topics]
+
+
+def has_clear_winner(
+    candidates: list[TopicCandidate], margin: float = 0.20,
+) -> bool:
+    """単独本命と判定するか. top と 2nd の score 差が margin 以上なら True.
+
+    margin はトップスコアに対する相対比率 (default 20%).
+    """
+    if not candidates:
+        return False
+    if len(candidates) == 1:
+        return True
+    top = candidates[0].score
+    second = candidates[1].score
+    if top <= 0:
+        return False
+    return (top - second) / top >= margin
 
 
 def trace_flow_from(
@@ -166,8 +236,8 @@ def recall_topic_flow(
     if not candidates:
         return ""
 
-    if len(candidates) >= 2 and candidates[0].hit_count == candidates[1].hit_count:
-        # 同点で割り切れない → 聞き返し
+    if not has_clear_winner(candidates, margin=0.20):
+        # スコア接戦 → 候補確認に倒す
         return format_multi_candidates_block(candidates)
 
     # 単独本命候補: 流れ再構築

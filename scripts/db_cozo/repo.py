@@ -223,10 +223,14 @@ def fetch_topics(client: Client, topic_ids: list[str]) -> dict[str, dict]:
     if not topic_ids:
         return {}
     res = client.run(
-        "?[id, title, summary] := *topic{id, title, summary}, id in $ids",
+        "?[id, title, summary, last_active_at] := "
+        "*topic{id, title, summary, last_active_at}, id in $ids",
         {"ids": topic_ids},
     )
-    return {r[0]: {"title": r[1], "summary": r[2]} for r in res.get("rows", [])}
+    return {
+        r[0]: {"title": r[1], "summary": r[2], "last_active_at": r[3]}
+        for r in res.get("rows", [])
+    }
 
 
 def fetch_topic_episodes(
