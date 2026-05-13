@@ -81,7 +81,7 @@ def test_backfill_inserts_nodes_with_embedding(db):
         {"kind": "topic", "title": "Renju 盤サイズ",
          "state": "proposed", "content": "15x15 と 19x19 を比較"},
     ])
-    counts = backfill(db_path, client=client)
+    counts = backfill(db_path, client=client, apply_short_skip=False)
     assert counts["episodes_seen"] == 1
     assert counts["episodes_with_nodes"] == 1
     assert counts["nodes_added"] == 1
@@ -114,7 +114,7 @@ def test_backfill_does_not_touch_facts(db):
             {"kind": "topic", "title": "コーヒーの好み", "state": "proposed"},
         ],
     )
-    backfill(db_path, client=client)
+    backfill(db_path, client=client, apply_short_skip=False)
 
     conn2 = connect(db_path)
     try:
@@ -135,7 +135,7 @@ def test_backfill_dry_run_writes_nothing(db, capsys):
         {"kind": "topic", "title": "T1", "state": "proposed"},
         {"kind": "option", "title": "案 A", "state": "proposed"},
     ])
-    counts = backfill(db_path, dry_run=True, client=client)
+    counts = backfill(db_path, dry_run=True, client=client, apply_short_skip=False)
     # dry_run でも 件数は数える
     assert counts["nodes_added"] == 2
 
@@ -156,7 +156,7 @@ def test_backfill_skips_invalid_nodes(db):
         {"kind": "invalid_kind", "title": "X", "state": "proposed"},
         {"kind": "topic", "title": "OK", "state": "proposed"},
     ])
-    counts = backfill(db_path, client=client)
+    counts = backfill(db_path, client=client, apply_short_skip=False)
     # parse_nodes が invalid_kind を弾く設計なら 1, 通すなら is_valid で 1.
     # いずれにせよ最終 add_node は valid なノードだけ.
     conn2 = connect(db_path)
@@ -166,3 +166,69 @@ def test_backfill_skips_invalid_nodes(db):
         assert "X" not in titles
     finally:
         conn2.close()
+
+
+# ── 0.6.20 軽量モデル + 短文 skip ─────────────────────────────────────
+
+def test_short_user_episode_is_skipped_without_llm_call(db):
+    """短文 user 発話は LLM を呼ばずに飛ばす (= generate_calls 増えない)."""
+    conn, db_path = db
+    save_episode(conn, role="user", content="OK", session_id="s1")  # 2 字
+    save_episode(conn, role="user", content="ありがとう", session_id="s1")  # 5 字
+    conn.commit()
+
+    client = FakeWriteClient(nodes_payload=[
+        {"kind": "topic", "title": "T", "state": "proposed"},
+    ])
+    counts = backfill(db_path, client=client)  # default = apply_short_skip
+    assert client.generate_calls == 0  # LLM 呼ばれない
+    assert counts["episodes_seen"] == 0
+
+
+def test_assistant_short_episode_is_not_skipped(db):
+    """assistant の短文は短い結論候補なので skip しない."""
+    conn, db_path = db
+    save_episode(conn, role="assistant", content="採用", session_id="s1")  # 2 字
+    conn.commit()
+
+    client = FakeWriteClient(nodes_payload=[
+        {"kind": "decision", "title": "採用", "state": "accepted"},
+    ])
+    counts = backfill(db_path, client=client)
+    assert client.generate_calls == 1
+    assert counts["nodes_added"] == 1
+
+
+def test_no_short_skip_processes_short_user_episodes(db):
+    """apply_short_skip=False で 短文 user も処理対象に戻る."""
+    conn, db_path = db
+    save_episode(conn, role="user", content="OK", session_id="s1")
+    conn.commit()
+
+    client = FakeWriteClient(nodes_payload=[])  # 抽出 0 件想定
+    counts = backfill(db_path, client=client, apply_short_skip=False)
+    assert client.generate_calls == 1
+    assert counts["episodes_seen"] == 1
+
+
+def test_model_argument_is_propagated_to_generate(db, monkeypatch):
+    """--model で指定したモデル名が generate() に渡る."""
+    conn, db_path = db
+    save_episode(
+        conn, role="user", content="盤サイズの議論を続けたい", session_id="s1",
+    )
+    conn.commit()
+
+    seen_models: list[str] = []
+    client = FakeWriteClient(nodes_payload=[
+        {"kind": "topic", "title": "盤サイズ", "state": "proposed"},
+    ])
+    orig_generate = client.generate
+
+    def spy(model: str, prompt: str) -> str:
+        seen_models.append(model)
+        return orig_generate(model, prompt)
+    client.generate = spy  # type: ignore[method-assign]
+
+    backfill(db_path, client=client, model="gemma3:4b", apply_short_skip=False)
+    assert seen_models == ["gemma3:4b"]

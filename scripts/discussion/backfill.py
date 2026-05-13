@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -35,13 +36,48 @@ from scripts.write.run import EMBED_MODEL, fetch_buffer
 
 DEFAULT_BUFFER_N = 3
 
+# backfill 専用 default model:
+# 通常の write は heavy (gemma3:12b) を使うが backfill は重すぎる.
+# 構造抽出 (kind/title/state 程度) なら light (gemma3:4b) で十分捌けて
+# 1 件 ~3-5s と heavy の数倍速い. 失敗率がやや上がる懸念はあるが
+# **facts は触らない** 設計のため誤抽出が DB を汚染する経路が無い.
+DEFAULT_BACKFILL_MODEL = os.environ.get(
+    "PERSONA_LIGHT_MODEL",
+    os.environ.get("PERSONA_JUDGE_MODEL", "gemma3:4b"),
+)
+
+# 短文 + user role の episode はノード抽出されない事が殆ど (= 「OK」「うん」「了解」
+# 等の相槌・確認). LLM 呼ばずに skip して時間とトークンを節約する.
+# assistant 短文 (= 短い回答) は decision/observation 抽出余地があるため除外しない.
+SHORT_USER_SKIP_CHARS = int(os.environ.get("PERSONA_BACKFILL_USER_SKIP_CHARS", "50"))
+
+
+def _is_likely_empty_episode(role: str, content: str | None) -> bool:
+    """LLM を呼んでもまずノードが出ない episode かを軽量判定.
+
+    短文かつ user の発話は相槌・確認 (「OK」「うん」「了解」「ありがとう」 等)
+    である確率が高く、 議論ノードを抽出する余地が無い. これを事前に弾くことで
+    backfill の LLM 呼び出し回数を大幅削減 (= 1993 件のうち半数以上が該当する
+    プロジェクトもある).
+
+    assistant の短文は短い結論や提案 (decision/observation 候補) の可能性が
+    あるため除外しない.
+    """
+    if not content or not content.strip():
+        return True
+    if role == "user" and len(content.strip()) < SHORT_USER_SKIP_CHARS:
+        return True
+    return False
+
 
 def _episodes_to_process(
     conn: sqlite3.Connection, since_episode_id: int | None,
+    *, apply_short_skip: bool = True,
 ) -> list[dict]:
     """discussion_nodes が無い episode を昇順で返す.
 
     role='user' / 'assistant' どちらも対象. 既に nodes がある episode は skip.
+    apply_short_skip=True (default) の時、 短文 user 発話は LLM 呼ばずに飛ばす.
     """
     sql = (
         "SELECT e.id, e.role, e.content, e.session_id "
@@ -56,10 +92,12 @@ def _episodes_to_process(
         params.append(since_episode_id)
     sql += "ORDER BY e.id ASC"
     rows = conn.execute(sql, params).fetchall()
-    return [
-        {"id": r[0], "role": r[1], "content": r[2], "session_id": r[3]}
-        for r in rows
-    ]
+    out: list[dict] = []
+    for r in rows:
+        if apply_short_skip and _is_likely_empty_episode(r[1], r[2]):
+            continue
+        out.append({"id": r[0], "role": r[1], "content": r[2], "session_id": r[3]})
+    return out
 
 
 def backfill_one(
@@ -67,7 +105,7 @@ def backfill_one(
     episode: dict,
     client: LLMClient,
     buffer_n: int = DEFAULT_BUFFER_N,
-    write_model: str = WRITE_MODEL,
+    write_model: str = DEFAULT_BACKFILL_MODEL,
     embed_model: str = EMBED_MODEL,
     dry_run: bool = False,
 ) -> int:
@@ -128,15 +166,22 @@ def backfill_one(
 
 
 def count_pending_episodes(
-    db_path: Path, since_episode_id: int | None = None,
+    db_path: Path,
+    since_episode_id: int | None = None,
+    *, apply_short_skip: bool = True,
 ) -> int:
     """backfill 対象 (discussion_nodes 未生成の episode) の件数を返す.
 
     実行前に推定時間を見積もるための軽量 query (LLM 呼ばない).
+    apply_short_skip=True で短文 user skip 後の実処理件数を返す.
     """
     conn = connect(db_path)
     try:
-        return len(_episodes_to_process(conn, since_episode_id))
+        return len(
+            _episodes_to_process(
+                conn, since_episode_id, apply_short_skip=apply_short_skip,
+            )
+        )
     finally:
         conn.close()
 
@@ -149,11 +194,15 @@ def backfill(
     limit: int | None = None,
     client: LLMClient | None = None,
     progress: bool = False,
+    model: str = DEFAULT_BACKFILL_MODEL,
+    apply_short_skip: bool = True,
 ) -> dict[str, int]:
     """戻り値: { episodes_seen, episodes_with_nodes, nodes_added, interrupted }.
 
     progress=True で各 episode の N/M 進捗を stderr に表示.
     limit 指定で最大 N 件で打ち切り (= 部分的な再開実行).
+    model: write LLM model 名 (default = light = gemma3:4b 相当).
+    apply_short_skip: True で短文 user 発話を LLM 呼ばずに飛ばす.
     KeyboardInterrupt で抜けた場合 interrupted=1.
     """
     conn = connect(db_path)
@@ -163,7 +212,9 @@ def backfill(
     added_total = 0
     interrupted = 0
     try:
-        eps = _episodes_to_process(conn, since_episode_id)
+        eps = _episodes_to_process(
+            conn, since_episode_id, apply_short_skip=apply_short_skip,
+        )
         if limit is not None:
             eps = eps[:limit]
         total = len(eps)
@@ -174,7 +225,10 @@ def backfill(
                 )
                 sys.stderr.flush()
             try:
-                n = backfill_one(conn, ep, cli, buffer_n=buffer_n, dry_run=dry_run)
+                n = backfill_one(
+                    conn, ep, cli, buffer_n=buffer_n,
+                    write_model=model, dry_run=dry_run,
+                )
             except KeyboardInterrupt:
                 interrupted = 1
                 sys.stderr.write(
@@ -204,7 +258,7 @@ def backfill(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Backfill discussion_nodes for past episodes (0.6.19)",
+        description="Backfill discussion_nodes for past episodes (0.6.20)",
     )
     parser.add_argument("--db", type=Path, required=True, help="Path to persona DB")
     parser.add_argument(
@@ -218,6 +272,22 @@ def main() -> int:
     parser.add_argument(
         "--limit", type=int, default=None,
         help="Stop after processing this many episodes (resumable). Default: all.",
+    )
+    parser.add_argument(
+        "--model", type=str, default=DEFAULT_BACKFILL_MODEL,
+        help=(
+            "Write LLM model for node extraction (default: "
+            f"{DEFAULT_BACKFILL_MODEL} = light). "
+            "Use a heavy model for higher fidelity at much slower speed."
+        ),
+    )
+    parser.add_argument(
+        "--no-short-skip", action="store_true",
+        help=(
+            f"Disable skipping short user messages (default skip: user content "
+            f"< {SHORT_USER_SKIP_CHARS} chars). Use if short ack-like utterances "
+            "are still worth scanning in your project."
+        ),
     )
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -237,23 +307,40 @@ def main() -> int:
         print(f"DB not found: {args.db}", file=sys.stderr)
         return 1
 
+    apply_short_skip = not args.no_short_skip
+
     if args.count_only:
-        n = count_pending_episodes(args.db, since_episode_id=args.since_episode_id)
+        n = count_pending_episodes(
+            args.db, since_episode_id=args.since_episode_id,
+            apply_short_skip=apply_short_skip,
+        )
         print(n)
         return 0
 
-    pending = count_pending_episodes(args.db, since_episode_id=args.since_episode_id)
+    pending = count_pending_episodes(
+        args.db, since_episode_id=args.since_episode_id,
+        apply_short_skip=apply_short_skip,
+    )
     targeted = pending if args.limit is None else min(pending, args.limit)
-    # 経験値: gemma3:12b で 1 episode あたり ~15-30s.
-    est_min_low = max(1, int(targeted * 15 / 60))
-    est_min_high = max(1, int(targeted * 30 / 60))
+    # 経験値:
+    #   - light (gemma3:4b)  : ~3-6s / episode
+    #   - heavy (gemma3:12b) : ~15-30s / episode
+    is_light = "4b" in args.model.lower() or "small" in args.model.lower()
+    per_low, per_high = (3, 6) if is_light else (15, 30)
+    est_min_low = max(1, int(targeted * per_low / 60))
+    est_min_high = max(1, int(targeted * per_high / 60))
     print(f"=== discussion_nodes backfill: {args.db} ===")
+    print(f"model:            {args.model}")
     print(
         f"pending episodes: {pending}"
         + (f" (limit: {args.limit})" if args.limit else "")
+        + (f" (short user skip: <{SHORT_USER_SKIP_CHARS} chars)"
+           if apply_short_skip else "")
     )
-    print(f"estimated time:   {est_min_low}–{est_min_high} min "
-          "(LLM ~15–30s/episode)")
+    print(
+        f"estimated time:   {est_min_low}–{est_min_high} min "
+        f"(LLM ~{per_low}–{per_high}s/episode)"
+    )
     if args.dry_run:
         print("(dry-run: no DB writes)")
     if targeted == 0:
@@ -264,6 +351,8 @@ def main() -> int:
         args.db, since_episode_id=args.since_episode_id,
         buffer_n=args.buffer_n, dry_run=args.dry_run, limit=args.limit,
         progress=not args.no_progress,
+        model=args.model,
+        apply_short_skip=apply_short_skip,
     )
     print()
     print(

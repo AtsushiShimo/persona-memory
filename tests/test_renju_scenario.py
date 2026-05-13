@@ -132,7 +132,7 @@ def test_renju_continuation_via_backfill(db):
         embedding_map={"Renju": renju_vec, "盤サイズ": renju_vec, "15x15": renju_vec},
         default_vec=renju_vec,
     )
-    counts = backfill(db_path, client=client)
+    counts = backfill(db_path, client=client, apply_short_skip=False)
     assert counts["nodes_added"] == 1
 
     # backfill 後は recall が同じ DB を開く → discussion_nodes hit する
