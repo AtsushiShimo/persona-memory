@@ -57,7 +57,7 @@ if [[ ! -d "$VENV" ]]; then
 fi
 log "installing Python deps"
 "$VENV/bin/pip" install --quiet --upgrade pip
-"$VENV/bin/pip" install --quiet sqlite-vec httpx
+"$VENV/bin/pip" install --quiet sqlite-vec httpx pycozo cozo-embedded
 
 # 2. Ollama check + model pull
 if ! command -v ollama >/dev/null 2>&1; then

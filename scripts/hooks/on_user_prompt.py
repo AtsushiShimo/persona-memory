@@ -82,7 +82,23 @@ def main() -> int:
                 except Exception as e:
                     sys.stderr.write(f"[persona-memory] recall failed: {e}\n")
 
-            additional_context = "\n\n".join(s for s in (boot_section, recall_section) if s)
+            # ── Cozo 経路 (流れ再構築): .cozo.db が存在する時だけ追加 ──
+            cozo_section = ""
+            try:
+                from scripts.db_cozo.wire import (
+                    maybe_cozo_recall_block, maybe_cozo_save_episode,
+                )
+                # Cozo 側にも raw 保存 (新規発話の流れに乗せる)
+                maybe_cozo_save_episode(
+                    db_path, role="user", content=prompt, session_id=session_id,
+                )
+                cozo_section = maybe_cozo_recall_block(db_path, prompt)
+            except Exception as e:
+                sys.stderr.write(f"[persona-memory] cozo wire failed: {e}\n")
+
+            additional_context = "\n\n".join(
+                s for s in (cozo_section, boot_section, recall_section) if s
+            )
         finally:
             conn.close()
     except Exception as e:

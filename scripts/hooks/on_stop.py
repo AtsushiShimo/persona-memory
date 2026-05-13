@@ -71,6 +71,14 @@ def main() -> int:
                 continue
             eid = save_episode(conn, role=role, content=content, session_id=session_id)
             saved_ids.append(eid)
+            # Cozo 並走保存 (.cozo.db 存在時のみ)
+            try:
+                from scripts.db_cozo.wire import maybe_cozo_save_episode
+                maybe_cozo_save_episode(
+                    db_path, role=role, content=content, session_id=session_id,
+                )
+            except Exception as e:
+                sys.stderr.write(f"[persona-memory] cozo save_episode (stop) failed: {e}\n")
 
         set_meta(conn, meta_key, str(len(messages)))
     finally:

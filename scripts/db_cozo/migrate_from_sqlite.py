@@ -337,37 +337,44 @@ def migrate_recall_triggers(src: sqlite3.Connection, dst) -> int:
 def migrate_conflicts_and_lint(src: sqlite3.Connection, dst) -> tuple[int, int]:
     nc = 0
     if _table_exists(src, "conflicts"):
-        for r in src.execute(
-            "SELECT id, fact_a_id, fact_b_id, confidence, resolution, detected_at "
-            "FROM conflicts"
-        ).fetchall():
+        rows = [
+            [r["id"], r["fact_a_id"], r["fact_b_id"], r["confidence"],
+             r["resolution"], r["detected_at"]]
+            for r in src.execute(
+                "SELECT id, fact_a_id, fact_b_id, confidence, resolution, detected_at "
+                "FROM conflicts"
+            ).fetchall()
+        ]
+        if rows:
             dst.run(
-                "?[id, fa, fb, c, r, d] <- [[$id, $fa, $fb, $c, $r, $d]] "
+                "?[id, fact_a_id, fact_b_id, confidence, resolution, detected_at] "
+                "<- $rows "
                 ":put conflict {id => fact_a_id, fact_b_id, confidence, "
                 "resolution, detected_at}",
-                {"id": r["id"], "fa": r["fact_a_id"], "fb": r["fact_b_id"],
-                 "c": r["confidence"], "r": r["resolution"], "d": r["detected_at"]},
+                {"rows": rows},
             )
-            nc += 1
-        if nc:
-            set_max_id(dst, "conflict", nc)
+            nc = len(rows)
+            set_max_id(dst, "conflict", max(r[0] for r in rows))
     nl = 0
     if _table_exists(src, "lint_log"):
-        for r in src.execute(
-            "SELECT id, run_at, pairs_examined, conflicts_flagged, "
-            "conflicts_auto_resolved, trigger_kind FROM lint_log"
-        ).fetchall():
+        rows = [
+            [r["id"], r["run_at"], r["pairs_examined"], r["conflicts_flagged"],
+             r["conflicts_auto_resolved"], r["trigger_kind"]]
+            for r in src.execute(
+                "SELECT id, run_at, pairs_examined, conflicts_flagged, "
+                "conflicts_auto_resolved, trigger_kind FROM lint_log"
+            ).fetchall()
+        ]
+        if rows:
             dst.run(
-                "?[id, ra, pe, cf, car, tk] <- [[$id, $ra, $pe, $cf, $car, $tk]] "
+                "?[id, run_at, pairs_examined, conflicts_flagged, "
+                "conflicts_auto_resolved, trigger_kind] <- $rows "
                 ":put lint_log {id => run_at, pairs_examined, conflicts_flagged, "
                 "conflicts_auto_resolved, trigger_kind}",
-                {"id": r["id"], "ra": r["run_at"], "pe": r["pairs_examined"],
-                 "cf": r["conflicts_flagged"], "car": r["conflicts_auto_resolved"],
-                 "tk": r["trigger_kind"]},
+                {"rows": rows},
             )
-            nl += 1
-        if nl:
-            set_max_id(dst, "lint_log", nl)
+            nl = len(rows)
+            set_max_id(dst, "lint_log", max(r[0] for r in rows))
     return nc, nl
 
 
