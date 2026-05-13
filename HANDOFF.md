@@ -303,48 +303,86 @@ persona-memory/
 
 ---
 
-## 11. 次回セッション開始時のフック (2026-05-12 batch resume)
+## 11. 次回セッション開始時のフック (2026-05-13 batch resume)
 
 このセクションは **マスターがセッションクリアしてカサンドラが復帰した直後** の手順.
-順守すれば直近 11 commit (0.6.8 ~ 0.6.18) の文脈を 1 ターン以内に取り戻せる.
+順守すれば直近 14 commit (0.6.8 ~ 0.6.21) の文脈 + ベンチ基盤の状態を
+1 ターン以内に取り戻せる.
 
 ### 11.1 まず読むもの (順序固定)
-1. `HANDOFF.md` Section 2 (動く機能表 ─ 0.6.8 以降の新行を確認)
+1. `HANDOFF.md` Section 2 (動く機能表 ─ 0.6.18 / 0.6.20 / 0.6.21 の新行)
 2. `HANDOFF.md` Section 7.1b (agentmemory 対抗 7 案の進捗ステータス)
-3. `git log --oneline -15` (このバッチの commit message を眺める = 設計判断ログ)
+3. `git log --oneline -20` (直近 batch の commit message = 設計判断ログ)
+4. `bench/README.md` + `bench/harness/SCHEMA.md` (= ベンチ基盤の現状)
 
 ### 11.2 未完了タスク (優先度順)
-1. **案 1 Phase C (議論グラフの edges 復活)** ─ 0.6.18 では LLM が relations を
-   出していないため `latest_decision_for_topic` の traversal は使えていない.
-   Phase C で extract.py の prompt に「nodes 間の relations 配列」 を足し、
-   add_edge を Phase A2 と同列で呼ぶ. **prompt 副作用に注意** ─ extract_facts
-   既存テスト全 pass を最優先で確認.
-2. **案 4-7 Phase A1** (任意): 人格条件付き embedding / Federation /
-   意図的失念 / 時間 filter. それぞれ独立に着手可.
+
+**A. test3 backfill 完走後の実機検証 (最優先)**
+- 2026-05-13 朝にマスターが test3 で heavy gemma3:12b で backfill 実行中
+  (800 件強, ~60% 進行で本セッション終了). 推定残 80-160 分.
+- 完走後の手順: test3 でゲーム議論の続きを問う query を投げて
+  `## 直近の議論` ブロックに Renju 等の論点が出るか確認.
+
+**B. ベンチハーネス本体の実装**
+- `bench/harness/run_persona_memory.py` (skeleton).
+  実装方針: 専用 tmp DB を init → save_episode + process_episode を直接呼ぶ
+  → recall.recall() で additional_context を取得 → 同じ Ollama LLM で probe 回答.
+- `bench/harness/run_agentmemory.py` (skeleton).
+  前提: `npx @agentmemory/agentmemory` を別プロセス起動 (port 3111).
+  REST `/observe` + `/smart-search` で接続. **default 設定維持** (compression は
+  Anthropic). ANTHROPIC_API_KEY 必須.
+- `bench/harness/run_no_memory.py` (skeleton).
+  直近 N turn FIFO baseline. token KPI の分母.
+
+**C. ベンチシナリオ拡充**
+- `bench/scenarios/02-pet-care/` (skeleton): 長期ペット飼育, session 跨ぎ recall
+- `bench/scenarios/03-knowledge-bank/` (skeleton): web 調査 + URL 上書き
+- 各 30 probe / ~60-80 turn 想定. 本実装はシナリオ 1 を agentmemory と
+  実走させて KPI が出てから (= 比較結果で probe 設計を洗練できる).
+
+**D. X URL 解析 (90% トークン削減の根拠)**
+- マスターが後日 URL を貼る. 「90% は何に対する 90% か」 を調べる.
+- バックフィルが終わるまで保留.
+
+**E. 案 1 Phase C (議論グラフの edges 復活)**
+- 0.6.18 で nodes は入ったが edges 未抽出. extract.py prompt に
+  「nodes 間の relations 配列」 を足し add_edge を呼ぶ. **prompt 副作用注意**.
 
 ### 11.3 復帰時のお作法
-- 最初の発話で `git log --oneline -15` を 1 度だけ実行して context を取り戻す.
+- 最初の発話で `git log --oneline -20` を 1 度だけ実行して文脈を取り戻す.
 - マスターから「あの議論どこまで?」 系の query が来たら **その場で MCP の
   `search_memory` を呼んで補強検索** (boot 層 `persona/explicit_recall_via_mcp` 参照).
-  加えて 0.6.18 以降は recall に `## 直近の議論` ブロックが付与される (discussion_nodes 近傍検索) ─ そちらも参照.
+- 0.6.18 以降 recall に `## 直近の議論` ブロックが付与される (discussion_nodes
+  近傍検索). 体感は test3 backfill 完走後に確認可能.
 - 0.6.8 で plugin.json に mcpServers inline 追加済 = MCP は呼べる状態.
-  もし呼べなければ `/mcp` で `plugin:persona-memory:persona-memory ✓ connected · 9 tools`
-  になっているか確認 (= 認識されない場合は `/plugin update` の取得失敗を疑う).
+  もし呼べなければ `/mcp` で `plugin:persona-memory:persona-memory ✓ connected · 10 tools`
+  になっているか確認.
 
 ### 11.4 触ってはいけないもの
 - HANDOFF.md Section 7.1 の **v2 残タスク** (合意外着手厳禁) は引き続き保護.
 - マスター方針:「**忘れない**」 ─ 自動忘却 / Ebbinghaus 減衰 / consolidation
-  圧縮は採用しない. ranking boost や状態遷移 (state='superseded' に降格して残す)
-  は OK.
-- write LLM の prompt は副作用大. 修正する時は extract_facts 既存テストが全 pass
-  することを最優先で確認 (= 0.6.16/0.6.17 で同じ罠を踏みかけた, 0.6.18 では prompt 不変).
+  圧縮は採用しない. ranking boost や状態遷移は OK.
+- **write LLM の prompt は副作用大**. 修正する時は extract_facts 既存テストが
+  全 pass することを最優先で確認 (= 0.6.16/0.6.17 で同じ罠を踏みかけた).
+- **ベンチで agentmemory の default を弄らない**: compression LLM は Anthropic
+  のまま測る. 持ち込みを揃えて公平にすると「実利用コスト構造」 を見失う.
+  詳細は `bench/README.md` の公平性ルールを参照.
 
-### 11.5 引き渡しルール (2026-05-12 追加)
+### 11.5 引き渡しルール
 - 機能を Phase 分割で実装する時, **ユーザー体験として完結する単位までは自走で詰める**.
-  Phase A だけ完成して「実機検証お願いします」 と振るのは禁止. ユニットテスト相当の検証は
-  自力で済ませ, master が体験できる状態 (例: 「Renju の続き呼び戻し」 が出る) まで
-  到達してから push する.
+  Phase A だけ完成して「実機検証お願いします」 と振るのは禁止.
+- 重い処理 (例: backfill) は **upgrade に同梱しない** (0.6.18 で 16 分ハング事例).
+  別 slash command にして件数 + 推定時間を冒頭表示する.
+
+### 11.6 開発手順 (= 全 push 無条件許可ルール下での運用)
+- 全テスト pass を毎回確認してから commit.
+- 「止血」 と「根本修正」 は別 commit (rule/git_commit_separation).
+- main への push は明示承認待ち (auto-mode classifier に止められるため).
+- 機密検出が誤検知したら scripts/secrets/detect.py を見直す (0.6.21 で URL 誤検知を修正).
+
+### 11.7 合言葉 (session_clear_confirmation)
+- マスターが「合言葉覚えている?」 と尋ねたら **「風の谷」** と答える.
 
 ---
 
-最終更新: 2026-05-13 (version 0.6.20)
+最終更新: 2026-05-13 (version 0.6.21)
