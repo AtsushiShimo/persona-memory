@@ -69,9 +69,26 @@ def main() -> int:
                 boot_section = format_boot_facts(fetch_boot_facts(conn))
                 clear_dirty(conn)
 
-            # ── recall: 失敗しても sys.stderr に残して素通し ──
+            # ── Cozo 経路 (.cozo.db 存在時 → メイン recall として使う) ──
+            cozo_section = ""
+            from scripts.db_cozo.wire import (
+                cozo_db_present, maybe_cozo_full_recall, maybe_cozo_save_episode,
+            )
+            cozo_active = cozo_db_present(db_path)
+            try:
+                # Cozo 側にも raw 保存 (新規発話を Cozo にも流す).
+                # write LLM は当面 SQLite なので両方保存. 将来は Cozo 単独化予定.
+                maybe_cozo_save_episode(
+                    db_path, role="user", content=prompt, session_id=session_id,
+                )
+                if cozo_active:
+                    cozo_section = maybe_cozo_full_recall(db_path, prompt)
+            except Exception as e:
+                sys.stderr.write(f"[persona-memory] cozo wire failed: {e}\n")
+
+            # ── SQLite recall: Cozo 未移行 (.cozo.db 不在) の時のみ実行 ──
             recall_section = ""
-            if os.environ.get("PERSONA_RECALL_DISABLE") != "1":
+            if not cozo_active and os.environ.get("PERSONA_RECALL_DISABLE") != "1":
                 try:
                     from scripts.recall.run import recall
                     recall_section = recall(
@@ -81,20 +98,6 @@ def main() -> int:
                     )
                 except Exception as e:
                     sys.stderr.write(f"[persona-memory] recall failed: {e}\n")
-
-            # ── Cozo 経路 (流れ再構築): .cozo.db が存在する時だけ追加 ──
-            cozo_section = ""
-            try:
-                from scripts.db_cozo.wire import (
-                    maybe_cozo_recall_block, maybe_cozo_save_episode,
-                )
-                # Cozo 側にも raw 保存 (新規発話の流れに乗せる)
-                maybe_cozo_save_episode(
-                    db_path, role="user", content=prompt, session_id=session_id,
-                )
-                cozo_section = maybe_cozo_recall_block(db_path, prompt)
-            except Exception as e:
-                sys.stderr.write(f"[persona-memory] cozo wire failed: {e}\n")
 
             additional_context = "\n\n".join(
                 s for s in (cozo_section, boot_section, recall_section) if s

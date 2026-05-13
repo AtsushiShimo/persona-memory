@@ -29,7 +29,11 @@ def cozo_disabled() -> bool:
 
 
 def maybe_cozo_recall_block(sqlite_db: Path, query: str) -> str:
-    """Cozo DB が存在し disable されていなければ流れ再構築ブロックを返す."""
+    """Cozo DB が存在し disable されていなければ流れ再構築ブロックを返す.
+
+    旧来の単発 topic_flow ブロックのみ. recall_full への移行後は
+    maybe_cozo_full_recall を使うこと.
+    """
     if cozo_disabled() or not cozo_db_present(sqlite_db):
         return ""
     try:
@@ -47,6 +51,26 @@ def maybe_cozo_recall_block(sqlite_db: Path, query: str) -> str:
         return recall_topic_flow(client, emb)
     except Exception as e:
         sys.stderr.write(f"[persona-memory] cozo recall failed: {e}\n")
+        return ""
+
+
+def maybe_cozo_full_recall(
+    sqlite_db: Path, query: str, buffer: list[dict] | None = None,
+) -> str:
+    """Cozo DB が存在し disable されていなければ recall_full を呼んで全部返す.
+
+    旧 SQLite recall を置き換える経路. boot 層の dirty 注入は呼出側で別途.
+    """
+    if cozo_disabled() or not cozo_db_present(sqlite_db):
+        return ""
+    try:
+        from scripts.db_cozo.connection import init_db
+        from scripts.db_cozo.recall_full import recall_full
+        from scripts.shared.ollama import OllamaClient
+        client = init_db(cozo_db_path_for(sqlite_db))
+        return recall_full(client, query, OllamaClient(), buffer=buffer or [])
+    except Exception as e:
+        sys.stderr.write(f"[persona-memory] cozo full recall failed: {e}\n")
         return ""
 
 
