@@ -15,7 +15,7 @@ from scripts.recall.summarize import (
 class FakeClient:
     response: str
 
-    def generate(self, model, prompt):
+    def generate(self, model, prompt, num_ctx=None):
         return self.response
 
     def embed(self, model, text):
@@ -63,7 +63,7 @@ def test_summarize_strips_whitespace():
 def test_summarize_returns_empty_on_llm_error():
     @dataclass
     class CrashClient:
-        def generate(self, model, prompt):
+        def generate(self, model, prompt, num_ctx=None):
             raise RuntimeError("oops")
 
         def embed(self, model, text):

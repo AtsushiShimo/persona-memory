@@ -35,7 +35,7 @@ class ScenarioClient:
     embedding_map: dict[str, list[float]] = field(default_factory=dict)
     default_vec: list[float] = field(default_factory=lambda: [1.0] + [0.0] * 767)
 
-    def generate(self, model: str, prompt: str) -> str:
+    def generate(self, model: str, prompt: str, num_ctx: int | None = None) -> str:
         # recall analyze (analyze_query) は 'search_history' を含むキー名でプロンプト
         if "search_history" in prompt:
             return json.dumps(

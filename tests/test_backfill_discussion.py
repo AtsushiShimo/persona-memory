@@ -21,7 +21,7 @@ class FakeWriteClient:
     embed_vec: list[float] = field(default_factory=lambda: [1.0] + [0.0] * 767)
     generate_calls: int = 0
 
-    def generate(self, model: str, prompt: str) -> str:
+    def generate(self, model: str, prompt: str, num_ctx: int | None = None) -> str:
         self.generate_calls += 1
         # 0.6.17 以降の出力形式: {"facts": [...], "nodes": [...]}
         return json.dumps(
@@ -225,9 +225,9 @@ def test_model_argument_is_propagated_to_generate(db, monkeypatch):
     ])
     orig_generate = client.generate
 
-    def spy(model: str, prompt: str) -> str:
+    def spy(model: str, prompt: str, num_ctx: int | None = None) -> str:
         seen_models.append(model)
-        return orig_generate(model, prompt)
+        return orig_generate(model, prompt, num_ctx=num_ctx)
     client.generate = spy  # type: ignore[method-assign]
 
     backfill(db_path, client=client, model="gemma3:4b", apply_short_skip=False)

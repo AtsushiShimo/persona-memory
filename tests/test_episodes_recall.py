@@ -28,7 +28,7 @@ class FakeRecallClient:
     # 新仕様: recall は発話全文を embed する。fact 側も同じ vector で登録する想定。
     default_embedding: list[float] = field(default_factory=lambda: [1.0] + [0.0] * 767)
 
-    def generate(self, model, prompt):
+    def generate(self, model, prompt, num_ctx=None):
         if "search_history" in prompt:
             return json.dumps(
                 {"keywords": self.keywords, "search_history": self.search_history},

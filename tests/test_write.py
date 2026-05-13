@@ -41,7 +41,7 @@ class FakeClient:
         if self.embed_value is None:
             self.embed_value = [0.0] * 768
 
-    def generate(self, model: str, prompt: str) -> str:
+    def generate(self, model: str, prompt: str, num_ctx: int | None = None) -> str:
         return json.dumps(self.facts, ensure_ascii=False)
 
     def embed(self, model: str, text: str) -> list[float]:
@@ -134,7 +134,7 @@ def test_extract_facts_via_claude_backend(monkeypatch):
     )
 
     class _GuardedClient:
-        def generate(self, model, prompt):
+        def generate(self, model, prompt, num_ctx=None):
             calls["ollama_generate"] += 1
             return "[]"
         def embed(self, model, text):
@@ -414,7 +414,7 @@ def test_process_episode_buffer_respects_episode_session(db):
     captured_buffers = []
 
     class CapturingClient(FakeClient):
-        def generate(self, model, prompt):
+        def generate(self, model, prompt, num_ctx=None):
             captured_buffers.append(prompt)
             return super().generate(model, prompt)
 
@@ -585,7 +585,7 @@ def test_process_episode_persists_discussion_nodes(db):
 
     # FakeClient は object 形式の文字列を返すよう拡張
     class NodeAwareClient(FakeClient):
-        def generate(self, model, prompt):
+        def generate(self, model, prompt, num_ctx=None):
             return (
                 '{"facts": [{"category": "context", "key": "renju_decision", '
                 '"value": "自由作成", "importance": 7}], '

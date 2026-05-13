@@ -89,7 +89,7 @@ def test_log_escalation_truncates_outcome(db):
 class FakeClient:
     facts: list
 
-    def generate(self, model, prompt):
+    def generate(self, model, prompt, num_ctx=None):
         return json.dumps(self.facts, ensure_ascii=False)
 
     def embed(self, model, text):

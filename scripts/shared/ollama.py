@@ -28,10 +28,15 @@ class OllamaClient:
     host: str = DEFAULT_HOST
     timeout: float = DEFAULT_TIMEOUT
 
-    def generate(self, model: str, prompt: str) -> str:
+    def generate(self, model: str, prompt: str, num_ctx: int | None = None) -> str:
+        # num_ctx: per-request context window (token). 指定すると KV cache 配分が
+        # 縮み、モデル併存時の memory pressure を緩和できる. 既定 None = モデル既定値.
+        payload: dict = {"model": model, "prompt": prompt, "stream": False}
+        if num_ctx is not None:
+            payload["options"] = {"num_ctx": num_ctx}
         r = httpx.post(
             f"{self.host}/api/generate",
-            json={"model": model, "prompt": prompt, "stream": False},
+            json=payload,
             timeout=self.timeout,
         )
         r.raise_for_status()

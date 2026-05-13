@@ -36,7 +36,7 @@ class FakeRecallClient:
     # 0.6.12: 想起トリガー学習用. None なら trigger_phrase を出さない (後方互換).
     trigger_phrase: str | None = None
 
-    def generate(self, model: str, prompt: str) -> str:
+    def generate(self, model: str, prompt: str, num_ctx: int | None = None) -> str:
         if "search_history" in prompt:
             return json.dumps(
                 {

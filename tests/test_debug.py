@@ -23,7 +23,7 @@ class FakeClient:
     summary: str = "深煎り好き"
     embedding_map: dict[str, list[float]] = field(default_factory=dict)
 
-    def generate(self, model, prompt):
+    def generate(self, model, prompt, num_ctx=None):
         if "search_history" in prompt:
             return json.dumps(
                 {"keywords": self.keywords, "search_history": False},

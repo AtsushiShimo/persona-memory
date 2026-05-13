@@ -22,6 +22,10 @@ RECALL_MODEL = os.environ.get(
     os.environ.get("PERSONA_HEAVY_MODEL", "gemma3:12b"),
 )
 
+# recall analyze prompt は 2-3k token に収まる. num_ctx を絞って KV cache を縮小.
+# PERSONA_RECALL_NUM_CTX で上書き可能.
+RECALL_NUM_CTX = int(os.environ.get("PERSONA_RECALL_NUM_CTX", "8192"))
+
 
 @dataclass
 class QueryAnalysis:
@@ -119,7 +123,7 @@ def analyze_query(
     if _debug_enabled():
         log_extract_prompt(prompt)
     try:
-        response = client.generate(model, prompt)
+        response = client.generate(model, prompt, num_ctx=RECALL_NUM_CTX)
     except Exception:
         if _debug_enabled():
             log_extract_response("(generate failed)")

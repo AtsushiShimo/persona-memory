@@ -28,6 +28,9 @@ WRITE_MODEL = os.environ.get(
     os.environ.get("PERSONA_HEAVY_MODEL", "gemma3:12b"),
 )
 
+# write prompt は buffer 10 turn + テンプレートで 6-12k token 想定. KV cache を絞る.
+WRITE_NUM_CTX = int(os.environ.get("PERSONA_WRITE_NUM_CTX", "16384"))
+
 VALID_CATEGORIES = (
     "persona", "rule", "preference", "aversion", "profile", "skill", "context",
     "knowledge",
@@ -425,7 +428,7 @@ def _generate_extract_raw(
     try:
         if backend == "claude":
             return _extract_via_claude_backend(prompt)
-        return client.generate(model, prompt)
+        return client.generate(model, prompt, num_ctx=WRITE_NUM_CTX)
     except Exception:
         return ""
 

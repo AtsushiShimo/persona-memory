@@ -33,7 +33,7 @@ class FakeJudgeClient:
     embedding_map: dict[str, list[float]] = field(default_factory=dict)
     default_embedding: list[float] = field(default_factory=lambda: [1.0] + [0.0] * 767)
 
-    def generate(self, model: str, prompt: str) -> str:
+    def generate(self, model: str, prompt: str, num_ctx: int | None = None) -> str:
         # judge prompt はテンプレートに「記憶 A: ... 記憶 B: ...」 を含む
         # value 抽出
         import re
@@ -90,7 +90,7 @@ def test_judge_conflict_parses_valid_json():
 
 def test_judge_conflict_returns_zero_on_garbage_response():
     class GarbageClient:
-        def generate(self, m, p): return "なんか壊れたレスポンス"
+        def generate(self, m, p, num_ctx=None): return "なんか壊れたレスポンス"
         def embed(self, m, t): return [0.0] * 768
     contradict, conf = judge_conflict("a", "b", GarbageClient())
     assert (contradict, conf) == (False, 0)
@@ -99,7 +99,7 @@ def test_judge_conflict_returns_zero_on_garbage_response():
 def test_judge_conflict_clamps_confidence_in_range():
     """LLM が confidence=200 を返しても 0-100 に clamp される."""
     class WildClient:
-        def generate(self, m, p):
+        def generate(self, m, p, num_ctx=None):
             return json.dumps({"contradict": True, "confidence": 200})
         def embed(self, m, t): return [0.0] * 768
     _, conf = judge_conflict("a", "b", WildClient())

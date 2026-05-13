@@ -30,7 +30,7 @@ ROOT = Path(__file__).resolve().parent.parent
 class FakeClient:
     facts: list
 
-    def generate(self, model, prompt):
+    def generate(self, model, prompt, num_ctx=None):
         return json.dumps(self.facts, ensure_ascii=False)
 
     def embed(self, model, text):

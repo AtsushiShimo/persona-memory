@@ -11,7 +11,7 @@
 """
 from __future__ import annotations
 
-from scripts.recall.extract import RECALL_MODEL
+from scripts.recall.extract import RECALL_MODEL, RECALL_NUM_CTX
 from scripts.recall.search import RecalledEpisode, RecalledFact
 from scripts.shared.ollama import LLMClient
 
@@ -93,7 +93,7 @@ def summarize_recall(
     if _debug_enabled():
         _emit("recall.summarize.prompt", "c", {"prompt": prompt, "length": len(prompt)})
     try:
-        response = client.generate(model, prompt)
+        response = client.generate(model, prompt, num_ctx=RECALL_NUM_CTX)
     except Exception as e:
         if _debug_enabled():
             _emit("recall.summarize.response", "c", {"error": str(e)})
