@@ -31,6 +31,14 @@ _SECRET_PATTERNS = re.compile(
 ENTROPY_TOKEN_MIN_LEN = 32
 ENTROPY_THRESHOLD = 4.2
 
+# URL の path + query は公開情報なので機密ではない. 高エントロピー検査の前に
+# 剥がして偽陽性を防ぐ. 例: x.com の追跡パラメータ
+# `https://x.com/<user>/status/<id>?s=46&t=<random>` の `com/<user>/status/<id>`
+# 部分が 38 字超でエントロピー閾値を踏み block されていた事象への対処.
+# 既知の API キーパターン (sk- / ghp_ / AKIA / JWT 等) は元テキスト全文に対して
+# 引き続き走査するため、 URL 内に埋め込まれたキーも検出される.
+_URL_PATTERN = re.compile(r"https?://\S+")
+
 
 def _shannon_entropy(s: str) -> float:
     if not s:
@@ -56,9 +64,11 @@ def detect_secrets(text: str) -> list[str]:
     for m in _SECRET_PATTERNS.finditer(text):
         found.append(_mask(m.group()))
 
-    # 既知パターン非ヒット時のみエントロピー検査 (誤検出を抑える)
+    # 既知パターン非ヒット時のみエントロピー検査 (誤検出を抑える).
+    # URL は剥がしてから検査 (path/query は公開情報で機密ではない).
     if not found:
-        for token in re.findall(r"[A-Za-z0-9+/=_\-]{" + str(ENTROPY_TOKEN_MIN_LEN) + r",}", text):
+        scrubbed = _URL_PATTERN.sub(" ", text)
+        for token in re.findall(r"[A-Za-z0-9+/=_\-]{" + str(ENTROPY_TOKEN_MIN_LEN) + r",}", scrubbed):
             if _shannon_entropy(token) > ENTROPY_THRESHOLD:
                 found.append(_mask(token))
 
