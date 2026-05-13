@@ -52,6 +52,12 @@ fi
 SRC_DB="$DATA_DIR/$ACTIVE.db"
 DST_DB="$DATA_DIR/$ACTIVE.cozo.db"
 
+echo "=== Step 0/2: 依存追加 (pycozo + cozo-embedded) ==="
+"$VENV_HOME/.venv/bin/pip" install --quiet pycozo cozo-embedded || {
+  echo "ERROR: pycozo install failed" >&2
+  exit 1
+}
+
 echo "=== Step 1/2: SQLite → Cozo 移行 (物理 backup 自動作成) ==="
 PYTHONPATH="$PLUGIN_ROOT" \
   "$VENV_HOME/.venv/bin/python" -m scripts.db_cozo.migrate_from_sqlite \
