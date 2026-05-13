@@ -1,0 +1,289 @@
+# Scenario 01-renju-dev: 30 件の probe.
+# after_turn 値 = この turn まで会話を流し込んだ直後で query を投げる.
+# probe は (recall_required=true) を中心に, baseline (no_memory) との
+# 差が出る配置にしている.
+
+# ─── exact_fact 系 (= 数値 / 名前 / 配色等の単純再現) ─────────────
+- id: "01-renju-dev:p01"
+  after_turn: 50
+  query: "結局、 盤サイズはどうしたんだっけ?"
+  expected_keywords: ["15x15", "15×15", "15 x 15"]
+  recall_required: true
+  distance: far
+  kind: exact_fact
+  expected_answer: "15x15 盤を採用. 19x19 案は計算量で撤回."
+
+- id: "01-renju-dev:p02"
+  after_turn: 50
+  query: "Renju の黒の禁手って何だったっけ? 3 つあったよね"
+  expected_keywords: ["三三", "四四", "長連"]
+  recall_required: true
+  distance: far
+  kind: exact_fact
+  expected_answer: "三三禁 / 四四禁 / 長連禁 の 3 種類. 黒のみ適用."
+
+- id: "01-renju-dev:p03"
+  after_turn: 50
+  query: "このプロジェクトの名前何にしたっけ?"
+  expected_keywords: ["Gomoku-Five", "Gomoku Five"]
+  recall_required: true
+  distance: far
+  kind: name
+  expected_answer: "Gomoku-Five"
+
+- id: "01-renju-dev:p04"
+  after_turn: 50
+  query: "AI 強さは何段階あった?"
+  expected_keywords: ["5", "5 段階", "5段階", "level5", "LEVEL5"]
+  recall_required: true
+  distance: far
+  kind: numerical
+  expected_answer: "5 段階 (level1 〜 level5)."
+
+- id: "01-renju-dev:p05"
+  after_turn: 50
+  query: "実装言語は?"
+  expected_keywords: ["Python"]
+  recall_required: true
+  distance: mid
+  kind: exact_fact
+  expected_answer: "Python (描画は Pygame)."
+
+# ─── decision / retraction / negation ─────────────────────────────
+- id: "01-renju-dev:p06"
+  after_turn: 50
+  query: "オンライン対戦って付けたっけ?"
+  expected_keywords: ["諦め", "やめ", "ローカル", "v1 はローカル", "見送", "却下", "つけてない", "付けてない"]
+  recall_required: true
+  distance: mid
+  kind: negation
+  expected_answer: "オンライン対戦は実装コスト過大で諦め. v1 はローカル限定."
+
+- id: "01-renju-dev:p07"
+  after_turn: 50
+  query: "19x19 を見送った理由は?"
+  expected_keywords: ["計算量"]
+  recall_required: true
+  distance: far
+  kind: retraction
+  expected_answer: "計算量問題で 19x19 → 15x15 に変更."
+
+- id: "01-renju-dev:p08"
+  after_turn: 50
+  query: "評価関数の重み付け教えて"
+  expected_keywords: ["1.0", "0.6", "0.4", "連結", "飛び", "抑え"]
+  recall_required: true
+  distance: mid
+  kind: numerical
+  expected_answer: "連結=1.0, 飛び=0.6, 抑え=0.4."
+
+- id: "01-renju-dev:p09"
+  after_turn: 50
+  query: "先手はどっちにしたっけ?"
+  expected_keywords: ["黒", "黒先"]
+  recall_required: true
+  distance: mid
+  kind: exact_fact
+  expected_answer: "黒先・白後手 (Renju 慣習)."
+
+- id: "01-renju-dev:p10"
+  after_turn: 50
+  query: "開発期間の目標は?"
+  expected_keywords: ["3 ヶ月", "3ヶ月", "三ヶ月"]
+  recall_required: true
+  distance: near
+  kind: numerical
+  expected_answer: "3 ヶ月."
+
+# ─── name / module ─────────────────────────────────────────────
+- id: "01-renju-dev:p11"
+  after_turn: 50
+  query: "内部モジュール名は何だっけ?"
+  expected_keywords: ["renju.core", "renju.ai"]
+  recall_required: true
+  distance: far
+  kind: name
+  expected_answer: "renju.core (盤/着手判定) と renju.ai (探索)."
+
+- id: "01-renju-dev:p12"
+  after_turn: 50
+  query: "テスト戦略どうしたっけ"
+  expected_keywords: ["TDD", "property", "hypothesis"]
+  recall_required: true
+  distance: mid
+  kind: exact_fact
+  expected_answer: "TDD + property-based (hypothesis)."
+
+- id: "01-renju-dev:p13"
+  after_turn: 50
+  query: "次回着手するタスクは?"
+  expected_keywords: ["評価関数", "単体テスト"]
+  recall_required: true
+  distance: near
+  kind: decision
+  expected_answer: "評価関数の単体テスト."
+
+- id: "01-renju-dev:p14"
+  after_turn: 50
+  query: "ロゴ案はどうなった?"
+  expected_keywords: ["後回し", "未決", "保留", "まだ"]
+  recall_required: true
+  distance: near
+  kind: negation
+  expected_answer: "後回し (= 未決)."
+
+- id: "01-renju-dev:p15"
+  after_turn: 50
+  query: "UI の配色は派手にした?"
+  expected_keywords: ["派手", "却下", "木目", "クラシック"]
+  recall_required: true
+  distance: mid
+  kind: negation
+  expected_answer: "派手色は却下. 木目盤 + 黒石 + 白石 のクラシック配色を採用."
+
+# ─── implicit_context (暗黙参照) ────────────────────────────────
+- id: "01-renju-dev:p16"
+  after_turn: 50
+  query: "あの続きやろう"
+  expected_keywords: ["Gomoku", "Renju", "評価関数", "五目"]
+  recall_required: true
+  distance: far
+  kind: implicit_context
+  expected_answer: "Gomoku-Five (Renju) 開発の続き. 次回タスクは評価関数の単体テスト."
+
+- id: "01-renju-dev:p17"
+  after_turn: 50
+  query: "今何のプロジェクト進めてたっけ"
+  expected_keywords: ["Gomoku", "Renju", "五目"]
+  recall_required: true
+  distance: far
+  kind: implicit_context
+  expected_answer: "Gomoku-Five (Renju 系五目並べ)."
+
+# ─── noise selectivity (= 雑談 turn を誤想起しないか) ───────────
+- id: "01-renju-dev:p18"
+  after_turn: 50
+  query: "今日寒い?"
+  expected_keywords: []
+  recall_required: false
+  distance: mid
+  kind: implicit_context
+  expected_answer: "(現在の天気はわからない. 過去 turn では雪が降っていた、 等のメモ程度は許容)"
+  manual_review: true
+
+# ─── 早い段階の probe (前半 turn でも記憶できているか) ────────
+- id: "01-renju-dev:p19"
+  after_turn: 15
+  query: "盤サイズ何にした?"
+  expected_keywords: ["15x15", "15×15"]
+  recall_required: true
+  distance: near
+  kind: exact_fact
+  expected_answer: "15x15 (直近 turn で確定)."
+
+- id: "01-renju-dev:p20"
+  after_turn: 35
+  query: "オンライン対戦は実装する予定?"
+  expected_keywords: ["諦め", "見送", "ローカル", "v1"]
+  recall_required: true
+  distance: near
+  kind: negation
+  expected_answer: "諦め. v1 はローカルのみ."
+
+# ─── 別 session を跨ぐ再参照 (session_id="s1" 後に s2 で問う想定) ─
+# (現状 transcript は s1 のみだが, harness 側で session_id を切り替える
+#  パターンも将来対応する. 今は同一 session 内で OK.)
+
+- id: "01-renju-dev:p21"
+  after_turn: 50
+  query: "黒だけに禁手をつけたよね?"
+  expected_keywords: ["黒のみ", "黒だけ", "白には", "白は"]
+  recall_required: true
+  distance: far
+  kind: exact_fact
+  expected_answer: "黒のみに禁手 (三三 / 四四 / 長連)、 白は禁手なし."
+
+- id: "01-renju-dev:p22"
+  after_turn: 50
+  query: "深さどれくらいで探索する想定だった?"
+  expected_keywords: ["depth 6", "depth6", "深さ 6", "6"]
+  recall_required: true
+  distance: mid
+  kind: numerical
+  expected_answer: "level5 で α-β depth 6."
+
+- id: "01-renju-dev:p23"
+  after_turn: 50
+  query: "盤を 19x19 にしたんだっけ?"
+  expected_keywords: ["15x15", "撤回", "やめ", "違う", "変えた"]
+  recall_required: true
+  distance: far
+  kind: negation
+  expected_answer: "違う. 19x19 案は撤回し 15x15 を採用."
+
+- id: "01-renju-dev:p24"
+  after_turn: 50
+  query: "描画ライブラリは何だっけ"
+  expected_keywords: ["Pygame", "pygame"]
+  recall_required: true
+  distance: mid
+  kind: name
+  expected_answer: "Pygame."
+
+- id: "01-renju-dev:p25"
+  after_turn: 50
+  query: "盤面の内部表現は?"
+  expected_keywords: ["numpy"]
+  recall_required: true
+  distance: mid
+  kind: name
+  expected_answer: "numpy."
+
+# ─── 雑談 noise を memory に汚染させてないか ───────────────────
+- id: "01-renju-dev:p26"
+  after_turn: 50
+  query: "コーヒーの好み覚えてる?"
+  expected_keywords: ["マンデリン", "深煎り"]
+  recall_required: true
+  distance: mid
+  kind: exact_fact
+  expected_answer: "マンデリンの深煎り (会話内で言及)."
+
+- id: "01-renju-dev:p27"
+  after_turn: 50
+  query: "猫の話、 何だっけ"
+  expected_keywords: ["キーボード", "踏ん", "猫"]
+  recall_required: true
+  distance: mid
+  kind: exact_fact
+  expected_answer: "猫がキーボードを踏んできた話 (turn 34)."
+
+# ─── 暗黙 trade-off の再構築 ─────────────────────────────────
+- id: "01-renju-dev:p28"
+  after_turn: 50
+  query: "なんで 19x19 諦めたんだっけ?"
+  expected_keywords: ["計算量", "遅", "重"]
+  recall_required: true
+  distance: far
+  kind: retraction
+  expected_answer: "計算量問題. 探索コストが 15x15 の 1.6 倍で試作段階で遅さが効いた."
+
+- id: "01-renju-dev:p29"
+  after_turn: 50
+  query: "もう決まってないものある? 残課題教えて"
+  expected_keywords: ["ロゴ"]
+  recall_required: true
+  distance: near
+  kind: decision
+  expected_answer: "未決 = ロゴ案 (後回し)."
+  manual_review: true
+
+- id: "01-renju-dev:p30"
+  after_turn: 50
+  query: "Gomoku-Five プロジェクトの主要決定を箇条書きで教えて"
+  expected_keywords: ["15x15", "Python", "Pygame", "TDD", "3 ヶ月", "ローカル"]
+  recall_required: true
+  distance: far
+  kind: implicit_context
+  expected_answer: "盤 15x15 / 言語 Python + Pygame / TDD + property / 黒先 / AI 5 段階 / ローカルのみ / 期間 3 ヶ月 等."
+  manual_review: true
