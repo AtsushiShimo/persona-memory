@@ -39,6 +39,13 @@ ENTROPY_THRESHOLD = 4.2
 # 引き続き走査するため、 URL 内に埋め込まれたキーも検出される.
 _URL_PATTERN = re.compile(r"https?://\S+")
 
+# 絶対パスも公開情報 (機密ではない). 32 字超の深いパスがエントロピー閾値を
+# 踏んで block されていた事象への対処. 例: Claude Code 内部の task 通知パス
+# `/private/tmp/claude-501/.../tasks/<task-id>.output` 全体が 1 トークンと
+# して検出されていた. 既知 API キーパターンは元テキスト全文に対して走査するため、
+# パス内に埋め込まれたキーも引き続き検出される.
+_PATH_PATTERN = re.compile(r"(?<![A-Za-z0-9])/[A-Za-z0-9._+\-]+(?:/[A-Za-z0-9._+\-]+)+")
+
 
 def _shannon_entropy(s: str) -> float:
     if not s:
@@ -65,9 +72,10 @@ def detect_secrets(text: str) -> list[str]:
         found.append(_mask(m.group()))
 
     # 既知パターン非ヒット時のみエントロピー検査 (誤検出を抑える).
-    # URL は剥がしてから検査 (path/query は公開情報で機密ではない).
+    # URL / 絶対パスは剥がしてから検査 (どちらも公開情報で機密ではない).
     if not found:
         scrubbed = _URL_PATTERN.sub(" ", text)
+        scrubbed = _PATH_PATTERN.sub(" ", scrubbed)
         for token in re.findall(r"[A-Za-z0-9+/=_\-]{" + str(ENTROPY_TOKEN_MIN_LEN) + r",}", scrubbed):
             if _shannon_entropy(token) > ENTROPY_THRESHOLD:
                 found.append(_mask(token))

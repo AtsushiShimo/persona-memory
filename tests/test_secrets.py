@@ -99,3 +99,35 @@ def test_high_entropy_outside_url_still_flagged():
     )
     found = detect_secrets(text)
     assert len(found) == 1
+
+
+# ── 0.7.1: 絶対パス誤検知防止 ────────────────────────────────────────
+
+def test_absolute_path_not_flagged():
+    """深い絶対パスは機密ではない (Claude Code 内部 task 通知パスで誤検知発生)."""
+    text = (
+        "<output-file>/private/tmp/claude-501/"
+        "-Users-atsushishimo-Desktop-claude-dev-persona-memory-developer/"
+        "c0c7ea17-4ccf-4957-8fe4-279cbe5966a0/tasks/bgoilivco.output"
+        "</output-file>"
+    )
+    assert detect_secrets(text) == []
+
+
+def test_api_key_with_absolute_path_still_flagged():
+    """パスを剥がしても本文中の API キーは既知パターンで検出される."""
+    text = (
+        "ログ: /var/log/app.log で漏洩したキー: "
+        "sk-proj-abcdefghijklmnopqrstuvwxyz1234567890"
+    )
+    found = detect_secrets(text)
+    assert len(found) == 1
+    assert found[0].startswith("sk-pro")
+
+
+def test_high_entropy_after_path_still_flagged():
+    """パス scrub 後も本文中の高エントロピートークンは検出される."""
+    token = "Xq7vK9pL3mN8wR2tY5sH1jD4gF6cZ0aB"
+    text = f"設定ファイル: /etc/myapp/config.yml に書いた秘密: {token}"
+    found = detect_secrets(text)
+    assert len(found) == 1
