@@ -259,3 +259,62 @@ def fetch_recent_episodes_for_topic(
         {"tid": topic_id, "n": last_n},
     )
     return [{"id": r[0], "role": r[1], "content": r[2]} for r in res.get("rows", [])]
+
+
+def find_similar_topics_by_emb(
+    client: Client, embedding: list[float],
+    top_k: int = 5,
+    exclude_topic_id: str | None = None,
+    distance_max: float = 0.6,
+    episode_pool: int = 20,
+) -> list[dict]:
+    """新発話 embedding に近い過去 topic 候補を集約して返す.
+
+    Cross-Session Topic Merge の前段. 「session 跨ぎで同議題を merge」 用に,
+    session 横断 vec 検索 → topic_id 集約 → hit 数で並べ替え.
+
+    アルゴリズム:
+    1. episode_pool 件まで episodes_vec で session 横断近傍を取得
+    2. 各 episode の topic_id を引いてグループ化
+    3. exclude_topic_id (= 現在 active な topic) を除外
+    4. hit 数 desc, min_distance asc で並べ替え
+
+    戻り値: [
+      {"topic_id": str, "hit_count": int, "min_distance": float,
+       "representative_episode_ids": [int, ...]}, ...
+    ] (best first, max top_k).
+    """
+    eps = search_episodes_vec(
+        client, embedding, top_k=episode_pool, distance_max=distance_max,
+    )
+    if not eps:
+        return []
+    ep_ids = [e["id"] for e in eps]
+    res = client.run(
+        "?[id, topic_id] := *episode{id, topic_id}, id in $ids",
+        {"ids": ep_ids},
+    )
+    ep_to_topic = {r[0]: r[1] for r in res.get("rows", [])}
+    by_topic: dict[str, dict] = {}
+    for e in eps:
+        tid = ep_to_topic.get(e["id"])
+        if not tid:
+            continue
+        if exclude_topic_id and tid == exclude_topic_id:
+            continue
+        bucket = by_topic.setdefault(tid, {
+            "topic_id": tid,
+            "hit_count": 0,
+            "min_distance": float("inf"),
+            "representative_episode_ids": [],
+        })
+        bucket["hit_count"] += 1
+        if e["distance"] < bucket["min_distance"]:
+            bucket["min_distance"] = e["distance"]
+        if len(bucket["representative_episode_ids"]) < 3:
+            bucket["representative_episode_ids"].append(e["id"])
+    candidates = sorted(
+        by_topic.values(),
+        key=lambda b: (-b["hit_count"], b["min_distance"]),
+    )
+    return candidates[:top_k]
