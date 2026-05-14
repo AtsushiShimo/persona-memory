@@ -385,4 +385,126 @@ persona-memory/
 
 ---
 
-最終更新: 2026-05-13 (version 0.6.21)
+## 12. 次回セッション開始時のフック (2026-05-14, version 0.7.0)
+
+このセクションは **マスターがセッションクリアして復帰した直後** の手順.
+順守すれば直近の大改修 (0.6.22 ~ 0.7.0) の文脈を 1 ターン以内に取り戻せる.
+
+### 12.1 まず読むもの (順序固定)
+1. `HANDOFF.md` この Section 12 (Cozo 統合 + Phase 4 まで)
+2. `git log --oneline -25` (0.6.21 以降 25 commit が新規分)
+3. `scripts/db_cozo/` ディレクトリ (新規追加. ~1,800 行)
+4. `commands/upgrade-cozo.md` (新ユーザー側マイグレーションコマンド)
+
+### 12.2 0.6.22 - 0.7.0 で起きたこと (要点)
+
+**0.6.22-23 (latency 修復):**
+- 最初の発話で 2-3 分かかっていた問題 → ~9 秒に短縮
+- 原因: gemma3:12b が context=131072 (46GB) で常駐していた + cold start が timeout
+- 修正: per-request `num_ctx=8192/16384` (KV cache 縮小) + `keep_alive=30m` +
+  SessionStart prewarm + `PERSONA_OLLAMA_TIMEOUT=180s`
+
+**0.6.24-25 (トピック記憶 SQLite 版):**
+- `topics` / `topic_tags` / `topic_relations` / `episodes.topic_id` 追加
+- write LLM とは別の light LLM (gemma3:4b) が tag を抽出
+- recall に「## 関連する議論」 ブロック追加
+- /persona-memory:backfill-topic-tags で旧 episodes 救済
+- ただし「議論の流れ」 は出ず、 候補絞り込みも粗い問題が残った
+
+**0.7.0 (Cozo 全面移行 — 大改修):**
+- マスター指摘:「グラフ DB と謳いつつ discussion_edges が 0 件 = 線で繋がってない点」
+- PoC で Cozo embedded を評価 → 全面移行決定 (graph + vec + relational を 1 ストア)
+- `scripts/db_cozo/` 新規:
+  - `connection.py`: Cozo SQLite backend, schema 定義, HNSW index
+  - `migrate_from_sqlite.py`: 旧 .db を物理 backup → Cozo へ転送
+  - `repo.py`: save_episode / search_facts_vec / search_episodes_vec / search_topic_tags_vec / etc
+  - `discussion.py`: add_node / add_edge / chain_from / find_terminal_nodes / nearest_nodes
+  - `graph_extract.py`: heavy LLM が「議論ノード + prev_relation」 を抽出
+  - `backfill_graph.py`: 旧 episodes → discussion_node + edge を遡及生成
+  - `recall.py`: vec hit → topic 確定 → graph traverse → 流れ再構築
+  - `recall_full.py`: SQLite recall を完全置換するフル recall
+  - `wire.py`: hook 配線ヘルパ (cozo_db_present で自動分岐)
+  - `topic_shift.py`: セッション内 LLM 話題シフト検知
+- /persona-memory:upgrade-cozo: 移行 + backfill を 1 コマンドで
+- 候補ランキング改善 (recency + distance 強調 + tag uniqueness, has_clear_winner)
+
+### 12.3 アーキテクチャ現状 (重要)
+
+**SQLite + Cozo の二重保存 (= 移行期):**
+- `<persona>.db` (旧 SQLite) はバックアップとして残置. **削除しない**.
+- `<persona>.cozo.db` (新 Cozo) が **メイン読み出し DB**.
+- 新規 episode は **両 DB に保存** (write LLM が SQLite を読むため).
+- recall: `.cozo.db` 存在時は Cozo フル recall、 不在時は旧 SQLite (後方互換).
+- `PERSONA_COZO_DISABLE=1` で Cozo 経路を全 bypass 可.
+
+**まだ移行していないもの (Phase 5 候補):**
+- write LLM (`scripts/write/run.py`) は SQLite に fact 抽出して保存. Cozo にはミラーなし.
+- write LLM 経路の Cozo 単独化が次の大仕事.
+- lint / health / MCP server (`server/main.py`) も SQLite ベース.
+
+### 12.4 test3 環境の現状 (2026-05-14 朝)
+- `/persona-memory:upgrade-cozo` を実行済 (.cozo.db 作成済, ソフィア persona)
+- 移行済データ: facts 1366 / episodes 1023 / topic_tags 44 / topics 4
+- backfill_graph 進行中で **中断** (~20 nodes / 5 edges まで). 残 ~1000 episodes.
+- 続行コマンド (再実行で重複処理しない):
+  ```
+  cd ~/.claude/plugins/cache/persona-memory/persona-memory/0.7.0
+  PERSONA_MEMORY_DB=~/Desktop/claude_dev/persona-test3/.persona-memory/ソフィア.cozo.db \
+  PYTHONPATH=. ~/.claude/plugins/data/persona-memory-persona-memory/.venv/bin/python \
+    -m scripts.db_cozo.backfill_graph \
+    --db ~/Desktop/claude_dev/persona-test3/.persona-memory/ソフィア.cozo.db
+  ```
+- 完走条件: 議論の終端 (「次論点 4 つ提示」 等) まで edges でチェーン化されること.
+
+### 12.5 未完了タスク (優先度順)
+
+**A. test3 backfill 完走 + 実機検証**
+- 上記コマンドを 1-2 時間放置 → 「Renju の話を再開しよう」 で末端 node が出るか確認.
+- メモリ圧迫で thrashing する場合は他 LLM 利用を止める.
+
+**B. write LLM の Cozo 単独化 (Phase 5)**
+- `scripts/write/run.py` を Cozo client で書き直し.
+- `scripts.db_cozo.repo.search_facts_vec` 等が既に揃っているので、
+  fact upsert + supersede を Cozo 上で実装する形.
+- これで SQLite 二重保存を解消できる.
+
+**C. ベンチマーク基盤の Cozo 対応**
+- `bench/harness/run_persona_memory.py` (skeleton 状態) を Cozo に向ける.
+- agentmemory との比較は SQLite/Cozo どちらで走らせるか要決定.
+
+**D. write LLM が prev_relation hint を活用 (Phase 4 リアルタイム)**
+- 現状 `topic_shift` は user_prompt 受信時に話題シフト判定. write LLM (Stop hook)
+  はまだ対応していない. 将来 write 側でも対応すれば一貫性向上.
+
+**E. lint / health / MCP server を Cozo に追従 (Phase 6)**
+- 現状 SQLite のまま. 二重保存中なら問題ないが、 Cozo 単独化後は移行必須.
+
+### 12.6 設計の核理念 (再確認)
+
+- **「忘れない」** ─ 自動忘却 / Ebbinghaus 減衰 / consolidation 圧縮は採用しない.
+  Cozo 移行も「データ消さない」 が前提 (旧 SQLite は backup として残置).
+- **流れ (graph edges) は人間の記憶モデル** ─ 単発 node の集合ではなく
+  「賛同 / 反論 / 派生 / 決定 / 次バトン」 等の関係性で繋ぐ.
+- **「曖昧なら聞き返す」** ─ 候補絞り込みで決め切れない場合は main agent が
+  ユーザーに「どの話題ですか?」 と聞き返す (continue_topic で確定).
+
+### 12.7 触ってはいけないもの
+- 旧 SQLite ファイル (`<persona>.db` および `<persona>.db.bak.*`) の削除.
+  Cozo 移行のセーフティネットなので消さない.
+- 旧 `scripts/db/` `scripts/recall/` `scripts/write/` `scripts/topic/` モジュールも
+  当面残置. Cozo 単独化が完了するまで.
+- `PERSONA_COZO_DISABLE=1` の意味: 緊急時の revert 経路. これがあるから安全に新機能を
+  入れられる. 機能から外さない.
+
+### 12.8 開発手順 (再掲)
+- 全テスト pass を毎回確認してから commit (現状 490 passed).
+- 「止血」 と「根本修正」 は別 commit.
+- main への push は `Bash(git push:*)` 許可済 (~/.claude/settings.json).
+- HEAVY_MODEL = gemma3:12b. LIGHT_MODEL = gemma3:4b. 両方 keep_alive=30m で常駐.
+
+### 12.9 合言葉
+- マスターが「合言葉覚えている?」 と尋ねたら **「風の谷」** と答える.
+
+---
+
+最終更新: 2026-05-14 (version 0.7.0)
