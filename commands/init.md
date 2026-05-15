@@ -418,6 +418,20 @@ PYTHONPATH="$PLUGIN_ROOT" \
   --address-user "<Q4>" \
   --stance "<S1>,<S2>,<S3>,<S4>,<S5>"
 
+# 4.5. Cozo DB を空 schema で初期化 (= 0.7.0 以降の Cross-Session Merge /
+#      議論グラフ / topic shift / visualize を発火させるため必須)
+#      新規 init では SQLite に何もないので「移行」 ではなく「空の Cozo を作る」
+#      だけで OK. これにより wire.py の cozo_db_present が True になり、
+#      以降 episode 保存と graph_extract が両方の DB に走る.
+PERSONA_MEMORY_DB="$PERSONA_DIR/$NAME.db" \
+PYTHONPATH="$PLUGIN_ROOT" \
+  "$VENV_HOME/.venv/bin/python" -c "
+from pathlib import Path
+from scripts.db_cozo.connection import init_db
+init_db(Path('$PERSONA_DIR/$NAME.cozo.db'))
+print('[ok] Cozo DB initialized: $PERSONA_DIR/$NAME.cozo.db')
+"
+
 # 5. Claude Code 標準 auto-memory との衝突チェック
 #    persona-memory プラグインは独自 DB に記憶を集約する方針なので、
 #    並行して Claude Code 標準 auto-memory が動いていると記憶が分散する。
