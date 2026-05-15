@@ -21,7 +21,7 @@
 
 ---
 
-## 2. 現在の状態 (2026-05-13, version 0.6.20)
+## 2. 現在の状態 (2026-05-15, version 0.7.5)
 
 ### 動く機能
 
@@ -51,6 +51,11 @@
 | **議論ノード embedding + recall 統合 (0.6.18 Phase B)** | discussion_nodes に title+content の embedding を付与し、 recall パイプラインで query_emb 最近傍ノードを「## 直近の議論」 として additionalContext 冒頭に prefix. 「直近どこで議論が止まっていたか」 系の query に末端ノード即答 (edges 非依存). | `scripts/discussion/graph.py:nearest_discussion_nodes`, `scripts/recall/run.py`, `scripts/write/run.py` |
 | **遡及抽出 (0.6.18-20)** | 0.6.17 以前 ingest 済の episode を write LLM で再抽出し discussion_nodes を救済 (facts は無変更). **`/persona-memory:backfill-discussion` で明示実行**. 0.6.20 で軽量モデル default (gemma3:4b ~3-6s/件) + 短文 user 発話の事前 skip (PERSONA_BACKFILL_USER_SKIP_CHARS=50) で 1993 件の dev DB が 8-16h → 1-2h に短縮. 件数 + 推定時間, 進捗 stderr, Ctrl+C 中断耐性, `--limit N` で分割実行可 | `scripts/discussion/backfill.py`, `commands/backfill-discussion.md` |
 | **MCP write_fact 回帰修正 (0.6.18)** | `server/db.upsert_fact` の `ON CONFLICT(category, key)` が partial unique index と一致せず `OperationalError` で落ちていた回帰を `WHERE status = 'active'` 付き conflict target で修正 | `server/db.py`, `tests/test_db_schema.py:test_upsert_fact_via_server_db` |
+| **Cross-Session Topic Merge (0.7.1)** | session 跨ぎで同議題なら過去 topic に merge. `topic_shift.find_past_topic_for_merge` + `repo.find_similar_topics_by_emb`. shift=true 時に「新 topic 発行」 前に過去 topic を vec 候補 + light LLM 判定で探す | `scripts/db_cozo/topic_shift.py`, `scripts/db_cozo/repo.py`, `scripts/db_cozo/backfill_cross_session_topics.py` |
+| **議論グラフの 3D 可視化 (0.7.2)** | on-demand. `/persona-memory:visualize` で discussion_node + edge を 3d-force-graph で可視化. node 色=kind / 透明度=state / edge 色=relation. ブラウザ自動 open | `scripts/db_cozo/visualize.py`, `templates/graph_viewer.html`, `commands/visualize.md` |
+| **init で Cozo DB 初期化 (0.7.3)** | 0.7.0 で Cozo 全面移行と謳いつつ /persona-memory:init が SQLite だけ作る致命的バグを修正. これがないと新規ペルソナで Cross-Session Merge / 議論グラフ / topic shift / recall_full / visualize 全部 bypass | `commands/init.md` (step 4.5) |
+| **Phase 5.1: write + boot を Cozo 化 (0.7.4)** | fact 抽出を SQLite + Cozo に並列保存. boot 注入を「Cozo に fact あり時は Cozo dirty 優先, 無ければ SQLite fallback」 に切替. これで読み側の主要経路は全部 Cozo メインに | `scripts/db_cozo/fact_persist.py`, `scripts/write/run.py`, `scripts/hooks/on_user_prompt.py` |
+| **Phase 5.2: lint を Cozo 化 (0.7.5)** | lint も SQLite と並列で Cozo 側で実行. judge_conflict (LLM 判定) は共有, DB 操作部だけ Cozo 化. これで write + boot + recall + lint の 4 経路すべてが Cozo 並走完了 (= Section 12.5 B 解消) | `scripts/db_cozo/lint.py`, `scripts/lint/run.py` |
 
 ### slash commands
 
@@ -63,6 +68,8 @@
 - `/persona-memory:reset` — 破壊的やり直し
 - `/persona-memory:status` — 状態確認
 - `/persona-memory:backfill-discussion` — 0.6.17 以前の過去ログから discussion_nodes を遡及生成 (重い: LLM 15-30s × episode 数. 件数 + 推定時間を最初に提示, Ctrl+C 中断耐性)
+- `/persona-memory:backfill-cross-session-topics` (0.7.1) — 旧 episode の topic_id を主題ベース cluster に振り直す. 対象は `topic_id == session_id` の legacy fallback のみ
+- `/persona-memory:visualize` (0.7.2) — 議論グラフを 3D 可視化. on-demand
 
 ### MCP tools (server/main.py)
 
@@ -462,11 +469,10 @@ persona-memory/
 - 上記コマンドを 1-2 時間放置 → 「Renju の話を再開しよう」 で末端 node が出るか確認.
 - メモリ圧迫で thrashing する場合は他 LLM 利用を止める.
 
-**B. write LLM の Cozo 単独化 (Phase 5)**
-- `scripts/write/run.py` を Cozo client で書き直し.
-- `scripts.db_cozo.repo.search_facts_vec` 等が既に揃っているので、
-  fact upsert + supersede を Cozo 上で実装する形.
-- これで SQLite 二重保存を解消できる.
+**B. write LLM の Cozo 単独化 (Phase 5)** ─ ✅ **0.7.4 + 0.7.5 で解消** (Section 13.2 参照)
+- 0.7.4 で fact_persist.py 新設 + write の Cozo 並列保存.
+- 0.7.5 で lint も Cozo 並列. 読み側は全部 Cozo メイン.
+- SQLite は「書く側のみ並走 + バックアップ」 として残置. 完全廃止は 0.8.0.
 
 **C. ベンチマーク基盤の Cozo 対応**
 - `bench/harness/run_persona_memory.py` (skeleton 状態) を Cozo に向ける.
@@ -507,4 +513,166 @@ persona-memory/
 
 ---
 
-最終更新: 2026-05-14 (version 0.7.0)
+## 13. 次回セッション開始時のフック (2026-05-15, version 0.7.5)
+
+このセクションは **マスターがセッションクリアして復帰した直後** の手順.
+順守すれば 0.7.1 〜 0.7.5 (Cross-Session Merge → 3D 可視化 → init fix →
+Phase 5 Cozo 単独化) の文脈を 1 ターン以内に取り戻せる.
+
+### 13.1 まず読むもの (順序固定)
+
+1. `HANDOFF.md` この Section 13 (= 0.7.5 までの状態)
+2. `HANDOFF.md` Section 2 (= 動く機能表 ─ 0.7.x の新行)
+3. `git log --oneline -15` (直近 batch の commit message = 設計判断ログ)
+4. 新規モジュール:
+   - `scripts/db_cozo/fact_persist.py` (Phase 5.1)
+   - `scripts/db_cozo/lint.py` (Phase 5.2)
+   - `scripts/db_cozo/visualize.py` + `templates/graph_viewer.html` (0.7.2)
+   - `scripts/db_cozo/backfill_cross_session_topics.py` (0.7.1)
+
+### 13.2 0.7.1 〜 0.7.5 で起きたこと (要点)
+
+**0.7.1 Cross-Session Topic Merge:**
+- 課題: 旧 episode は `topic_id == session_id` (legacy fallback) のため、
+  session 跨ぎで discussion_edge が断絶 (test3 で nodes=451 / edges=135 ≒ 30%).
+  graph_extract は prev_node を prompt に渡す設計だが、 topic 断絶のせいで
+  「同 topic 直前 node」 が取れず機能していなかった.
+- 修正: `topic_shift.find_past_topic_for_merge` で「過去 topic への merge」
+  経路を新設. shift = true 時に新 topic 発行前に vec 候補 + light LLM で
+  「同議題?」 判定 → match なら既存 topic に切替.
+- 重い処理 (backfill) は別 slash command `/persona-memory:backfill-cross-session-topics`
+  に分離.
+
+**0.7.2 議論グラフの 3D 可視化:**
+- マスター指摘:「グラフ DB の中身は人間からするとかなり見にくい. 3D 表現すべき」
+- on-demand のみ (= hook 経路では絶対呼ばない).
+- 3d-force-graph (three.js CDN) で node-edge を立体描画.
+- node 色 = kind, 透明度 = state, edge 色 = relation, 撤回 / 決定は太線.
+- side panel に node 詳細, 凡例付き.
+- `/persona-memory:visualize` で `.persona-memory/visualize/graph-<ts>.html`
+  を生成 → ブラウザ自動 open.
+
+**0.7.3 致命的 init bug fix:**
+- 0.7.0 で Cozo 全面移行と謳いつつ、 `/persona-memory:init` は SQLite だけ
+  作って Cozo を初期化していなかった = **新規ペルソナで Cross-Session
+  Merge / 議論グラフ / topic shift / recall_full / visualize がすべて
+  bypass** していた.
+- 実機 (test13 ミリム) で「議論どこまで?」 に「覚えてない」 と返って発覚.
+- 「単体テスト 516 件 pass」 が立っていたが install 経路を一度も踏んで
+  いなかった = まさに「通すためのテスト」 警戒の典型例.
+- 修正: `commands/init.md` の step 4.5 に `init_db(<persona>.cozo.db)`
+  呼び出しを追加 (= 空 schema 初期化だけで良い).
+
+**0.7.4 Phase 5.1: write + boot を Cozo 化:**
+- 課題: HANDOFF 旧 Section 12.5 B 残. write LLM (fact 抽出) + boot 注入は
+  依然 SQLite メイン. マスター指摘「中途半端な状態じゃテストにならない」.
+- 修正:
+  - `scripts/db_cozo/fact_persist.py` 新規 — find_match / insert_new /
+    reinforce / supersede (旧 row `:rm` で完全削除 → embedding 消去で
+    再 put → 新 row insert / HNSW 不整合回避) / apply_candidate /
+    mark/clear/is_boot_dirty / fetch_boot_facts.
+  - `scripts/write/run.py` — SQLite apply の直後に Cozo にも独立 apply.
+    両 DB は id 採番が独立なので supersede chain も別々に維持.
+  - `scripts/hooks/on_user_prompt.py` — boot 注入を「Cozo dirty 優先,
+    Cozo に fact 無ければ SQLite fallback」 に切替.
+
+**0.7.5 Phase 5.2: lint を Cozo 化:**
+- `scripts/db_cozo/lint.py` 新規 — fetch_fact / fetch_neighbors
+  (vec_idx + 同 category + 同属性 key) / auto_supersede /
+  record_conflict / record_lint_run. judge_conflict (LLM 判定本体) は
+  SQLite 版を共有.
+- `scripts/lint/run.py` — SQLite lint と並列に Cozo 側でも lint 実行.
+  SQLite fact の (category, key) で Cozo の対応 fact を find_match して
+  独立に lint chain を回す.
+- これで write + boot + recall + lint の **全 4 経路が Cozo 並走** 完了.
+  旧 Section 12.5 B 解消.
+
+### 13.3 アーキテクチャ現状 (重要)
+
+**SQLite + Cozo 二重保存 (= 移行期)**:
+- **書く側**: SQLite + Cozo に並列保存. 両方が完全な fact / episode を持つ.
+- **読む側**: Cozo メイン (recall_full / boot 注入 / Cross-Session Merge /
+  visualize). Cozo が空時のみ SQLite fallback.
+- `PERSONA_COZO_DISABLE=1` で全 Cozo 経路 bypass (= 緊急 revert).
+
+**なぜ SQLite を完全廃止しないか**:
+- ユーザー側で 0.7.0 以前から install していて upgrade-cozo 未実行のペルソナは
+  Cozo 不在 → SQLite を見続ける必要がある (= 後方互換).
+- SQLite を「バックアップとして残置」 は北極星「忘れない」 と整合.
+- 完全廃止は 0.8.0 メジャーで検討.
+
+### 13.4 未完了タスク (優先度順)
+
+**A. 開発リポ (persona-memory-developer = カサンドラ) 自体の Cozo 化**
+- カサンドラ (= 開発相棒) の DB が SQLite のまま. マスター指示で次回着手.
+- `/persona-memory:upgrade-cozo` を回す + backfill 各種.
+
+**B. シナリオ A/B/C の実機検証 (= ミリム test13)**
+- 0.7.5 反映後に実機確認. test13 の Cozo backfill_graph 完走待ち.
+- A: 3 セッション跨ぐ議論で末端まで辿れる
+- B: メタ会話混入時も議論本流が優先
+- C: 撤回 node が末端として扱われる
+  (発話例は「マスターアレンジ運用」 に切替済. 合格判定の核だけ共有)
+
+**C. ベンチハーネス基盤の本実装**
+- `bench/harness/run_*.py` (skeleton) を Cozo に向ける.
+- agentmemory との比較は default 設定維持で公平性確保 (= bench/README.md).
+
+**D. SQLite 経路の default 廃止 (= 0.8.0 メジャー)**
+- 並走 → メイン化 → 廃止の最終段階. 既存ユーザーの SQLite 削除のリスク考慮.
+
+**E. write LLM が prev_relation hint を活用 (リアルタイム議論ノード)**
+- 現状 graph_extract は backfill 経路でのみ走る. UserPromptSubmit hook で
+  毎発話に走る経路はまだ. これを実装すると議論ノードがリアルタイムで積まれる.
+
+**F. KB (= 大議論専用ノートテーブル) の実装**
+- マスターと議論済 (= kb_topic / kb_node / kb_edge を別 relation で新設,
+  自動 promotion 緩め, 能動検索のみ). 未着手. ピンポイント編集の原則上、
+  Cross-Session Merge の実機確認後に着手.
+
+### 13.5 設計の核理念 (絶対に守る)
+
+過去のやらかしから抽出した教訓 (= 同種の失敗を再発させないため):
+
+- **「忘れない」** ─ 自動忘却 / Ebbinghaus 減衰 / consolidation 圧縮は採用しない.
+- **「自然な記憶 / 自然な思い出し」** ─ 内部用語を出さず「思い出す / 覚えている」
+  と翻訳 (`boot/defaults.py:natural_voice`).
+- **「シナリオで × が出たら設計から見直し、 通すための調整は禁止」**
+  (= `playbook_symptomatic_fix_warning`).
+- **「単体テスト pass = 完了 ではない」** ─ install 経路 / hook 経路 / 実機 e2e を
+  必ず踏んでから完了報告. 0.7.3 で痛い目を見た.
+- **「事前にちゃんと調べてから言う」** ─ ディレクトリ存在 / 既存ファイル番号 /
+  install 状況など、 推測で押すな. 直接 DB を覗ける場面では覗く (= debug 例外).
+- **「セキュリティ警報は大げさで OK」** ─ 誤報リスクを取ってでも前のめりに伝える.
+- **「中途半端な並走は禁止」** ─ Phase 5 で「SQLite フォールバック付き Cozo」 を
+  捨てて、 「Cozo を完全実装 + SQLite バックアップ並走」 に切替えた経緯.
+- **「選択肢の時は AskUserQuestion + 番号 / アルファベット付け」** (UX feedback).
+- **「自己テストせず push しない」** ─ 一時 DB + fake LLM で実機相当の動作確認を
+  push 前に必ず実施.
+
+### 13.6 触ってはいけないもの
+
+- Section 7.1 の v2 残タスク (= 合意外着手厳禁) は引き続き保護.
+- 旧 SQLite 経路 (`scripts/db/` `scripts/write/` `scripts/lint/` 等) は
+  「書く側のみ並走」 として保持. 廃止は 0.8.0.
+- `PERSONA_COZO_DISABLE=1` 経路は緊急 revert として外さない.
+- write LLM の prompt 系 (`scripts/write/extract.py`) は実機 e2e 検証が
+  辛いので、 修正時は extract_facts 既存テストが全 pass + 実機シナリオを
+  必ず通すこと.
+
+### 13.7 開発手順 (再掲)
+
+- 全テスト pass を毎回確認してから commit (現状 **533 passed**).
+- **自己テスト** (= 一時 DB + fake LLM の実機相当動作確認) を push 前に必ず実施.
+- 「止血」 と「根本修正」 は別 commit.
+- main への push は `Bash(git push:*)` 許可済だが、 大改修 (Phase X 等) は
+  マスター確認を取る.
+- HEAVY_MODEL = gemma3:12b. LIGHT_MODEL = gemma3:4b. 両方 keep_alive=30m で常駐.
+
+### 13.8 合言葉
+
+- マスターが「合言葉覚えている?」 と尋ねたら **「風の谷」** と答える.
+
+---
+
+最終更新: 2026-05-15 (version 0.7.5)
