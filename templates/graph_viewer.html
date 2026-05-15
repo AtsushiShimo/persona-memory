@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>persona-memory — discussion graph</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden;
+               font-family: -apple-system, "Helvetica Neue", "Hiragino Sans",
+                            sans-serif; color: #eee; background: #0d0d12; }
+  #graph { width: 100vw; height: 100vh; }
+  #panel {
+    position: absolute; top: 0; right: 0; width: 360px; height: 100vh;
+    background: rgba(15, 15, 22, 0.92); border-left: 1px solid #333;
+    padding: 16px; box-sizing: border-box; overflow-y: auto;
+    backdrop-filter: blur(8px);
+  }
+  #panel h2 { margin: 0 0 8px 0; font-size: 14px; color: #888;
+              text-transform: uppercase; letter-spacing: 0.1em; }
+  #panel .title { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
+  #panel .meta { font-size: 12px; color: #999; margin-bottom: 12px; }
+  #panel .content { font-size: 13px; line-height: 1.5; color: #ccc;
+                    white-space: pre-wrap; word-break: break-word; }
+  #panel .badge { display: inline-block; padding: 2px 8px; border-radius: 4px;
+                  font-size: 11px; margin-right: 4px; }
+  #legend {
+    position: absolute; top: 16px; left: 16px; padding: 12px;
+    background: rgba(15, 15, 22, 0.85); border: 1px solid #333;
+    border-radius: 6px; font-size: 12px; max-width: 240px;
+  }
+  #legend h3 { margin: 0 0 8px 0; font-size: 11px; color: #888;
+               text-transform: uppercase; letter-spacing: 0.1em; }
+  #legend .row { display: flex; align-items: center; margin-bottom: 4px; }
+  #legend .swatch { display: inline-block; width: 10px; height: 10px;
+                    border-radius: 50%; margin-right: 8px; }
+  #legend .swatch-line { width: 16px; height: 2px; border-radius: 0; }
+  #meta-bar {
+    position: absolute; bottom: 0; left: 0; padding: 8px 16px;
+    background: rgba(15, 15, 22, 0.85); font-size: 11px; color: #888;
+    border-top: 1px solid #333; border-right: 1px solid #333;
+    border-top-right-radius: 6px;
+  }
+  .empty { color: #666; font-style: italic; }
+</style>
+</head>
+<body>
+<div id="graph"></div>
+<div id="legend">
+  <h3>Node kind</h3>
+  <div id="legend-nodes"></div>
+  <h3 style="margin-top: 12px;">Edge kind</h3>
+  <div id="legend-edges"></div>
+</div>
+<div id="panel">
+  <h2>選択された node</h2>
+  <div id="panel-body"><div class="empty">node をクリックすると詳細が表示されます</div></div>
+</div>
+<div id="meta-bar"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.155.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/3d-force-graph@1.74.0/dist/3d-force-graph.min.js"></script>
+<script>
+const GRAPH = __GRAPH_DATA_JSON__;
+
+const NODE_COLORS = {
+  topic:       '#4a90e2',
+  option:      '#f5a623',
+  decision:    '#7ed321',
+  retraction:  '#d0021b',
+  rationale:   '#9013fe',
+  observation: '#50e3c2',
+  question:    '#ffd700',
+  answer:      '#bd10e0',
+};
+const STATE_OPACITY = {
+  proposed:   1.0,
+  accepted:   1.0,
+  rejected:   0.35,
+  superseded: 0.3,
+  observed:   0.7,
+};
+const EDGE_COLORS = {
+  '賛同':     '#7ed321',
+  '反論':     '#d0021b',
+  '派生':     '#4a90e2',
+  '決定':     '#ffd700',
+  '次バトン': '#9013fe',
+  '観察':     '#50e3c2',
+  '結論':     '#f5a623',
+  '質問':     '#ffd700',
+  '回答':     '#bd10e0',
+  '撤回':     '#ff3030',
+};
+
+function hexToRgba(hex, alpha) {
+  const h = hex.replace('#', '');
+  const r = parseInt(h.substring(0, 2), 16);
+  const g = parseInt(h.substring(2, 4), 16);
+  const b = parseInt(h.substring(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function fillLegend() {
+  const ln = document.getElementById('legend-nodes');
+  ln.innerHTML = Object.entries(NODE_COLORS).map(([k, c]) =>
+    `<div class="row"><span class="swatch" style="background:${c}"></span>${k}</div>`
+  ).join('');
+  const le = document.getElementById('legend-edges');
+  le.innerHTML = Object.entries(EDGE_COLORS).map(([k, c]) =>
+    `<div class="row"><span class="swatch swatch-line" style="background:${c}"></span>${k}</div>`
+  ).join('');
+}
+
+function fillMetaBar() {
+  const m = GRAPH.meta;
+  document.getElementById('meta-bar').textContent =
+    `nodes=${m.node_count}  edges=${m.edge_count}  topics=${m.topic_count}  generated=${m.generated_at}`;
+}
+
+function nodeDetail(node) {
+  const color = NODE_COLORS[node.kind] || '#888';
+  const stateOp = STATE_OPACITY[node.state] ?? 0.9;
+  const topicTxt = node.topic_id || '(no topic)';
+  const tsTxt = node.ts || '';
+  return `
+    <div class="title">${escapeHtml(node.title || '(no title)')}</div>
+    <div class="meta">
+      <span class="badge" style="background:${hexToRgba(color, stateOp)}">${node.kind}</span>
+      <span class="badge" style="background:#333">${node.state}</span>
+    </div>
+    <div class="meta">id=#${node.id} · episode=${node.episode_id ?? '-'} · topic=${escapeHtml(topicTxt)}</div>
+    <div class="meta">${tsTxt}</div>
+    <div class="content">${escapeHtml(node.content || '(no content)')}</div>
+  `;
+}
+
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
+function init() {
+  fillLegend();
+  fillMetaBar();
+  const graph = ForceGraph3D()(document.getElementById('graph'))
+    .backgroundColor('#0d0d12')
+    .graphData({ nodes: GRAPH.nodes, links: GRAPH.links })
+    .nodeId('id')
+    .nodeLabel(n => `${escapeHtml(n.title)} [${n.kind}/${n.state}]`)
+    .nodeColor(n => {
+      const base = NODE_COLORS[n.kind] || '#888';
+      const op = STATE_OPACITY[n.state] ?? 0.9;
+      return hexToRgba(base, op);
+    })
+    .nodeVal(n => (n.kind === 'topic' ? 6 : n.kind === 'decision' ? 4 : 2))
+    .linkColor(l => EDGE_COLORS[l.kind] || '#777')
+    .linkWidth(l => (l.kind === '決定' || l.kind === '撤回') ? 2 : 1)
+    .linkDirectionalArrowLength(4)
+    .linkDirectionalArrowRelPos(1)
+    .linkLabel(l => l.kind)
+    .onNodeClick(n => {
+      document.getElementById('panel-body').innerHTML = nodeDetail(n);
+    });
+  // 同 topic_id でクラスタリング (色 force による弱い引力)
+  graph.d3Force('charge').strength(-80);
+}
+init();
+</script>
+</body>
+</html>
