@@ -306,6 +306,9 @@ def run(
     """指定された fact_id 群の近傍 lint を一括実行.
 
     write の detached tail から呼ばれる想定.
+
+    Phase 5.2 (0.7.5): SQLite lint と並列で Cozo 側でも lint を実行する.
+    Cozo は (category, key) で対応 fact を見つけて独立に lint chain を回す.
     """
     db_path = get_db_path()
     if db_path is None:
@@ -314,6 +317,25 @@ def run(
     conn = connect(db_path)
     seen_pairs: set[tuple[int, int]] = set()
     totals = {"pairs_examined": 0, "flagged": 0, "auto_resolved": 0}
+
+    # Cozo 並列 lint 用 setup
+    cozo_client = None
+    try:
+        from scripts.db_cozo.connection import init_db as _cozo_init_db
+        from scripts.db_cozo.fact_persist import find_match as _cozo_find_match
+        from scripts.db_cozo.lint import (
+            lint_around_fact_cozo as _cozo_lint_around_fact,
+            record_lint_run as _cozo_record_lint_run,
+        )
+        from scripts.db_cozo.wire import cozo_db_path_for, cozo_db_present
+        if cozo_db_present(db_path):
+            cozo_client = _cozo_init_db(cozo_db_path_for(db_path))
+    except Exception as e:
+        sys.stderr.write(f"[persona-memory] cozo lint setup failed: {e}\n")
+        cozo_client = None
+    cozo_seen_pairs: set[tuple[int, int]] = set()
+    cozo_totals = {"pairs_examined": 0, "flagged": 0, "auto_resolved": 0}
+
     try:
         for fid in fact_ids:
             try:
@@ -323,6 +345,24 @@ def run(
             except Exception as e:
                 sys.stderr.write(f"[persona-memory] lint fact_id={fid} failed: {e}\n")
                 continue
+            # Cozo 並列 lint: SQLite fact から (cat, key) を引いて Cozo の対応 fact を lint
+            if cozo_client is not None:
+                try:
+                    sf = _fetch_fact(conn, fid)
+                    if sf:
+                        cm = _cozo_find_match(
+                            cozo_client, sf["category"], sf["key"], None,
+                        )
+                        if cm is not None:
+                            cr = _cozo_lint_around_fact(
+                                cozo_client, cm.fact_id, cli, cozo_seen_pairs,
+                            )
+                            for k in cozo_totals:
+                                cozo_totals[k] += cr[k]
+                except Exception as e:
+                    sys.stderr.write(
+                        f"[persona-memory] cozo lint fact_id={fid} failed: {e}\n",
+                    )
         _record_lint_run(
             conn,
             pairs_examined=totals["pairs_examined"],
@@ -331,6 +371,19 @@ def run(
             trigger=trigger,
         )
         conn.commit()
+        if cozo_client is not None:
+            try:
+                _cozo_record_lint_run(
+                    cozo_client,
+                    pairs_examined=cozo_totals["pairs_examined"],
+                    flagged=cozo_totals["flagged"],
+                    auto_resolved=cozo_totals["auto_resolved"],
+                    trigger=trigger,
+                )
+            except Exception as e:
+                sys.stderr.write(
+                    f"[persona-memory] cozo record_lint_run failed: {e}\n",
+                )
     finally:
         conn.close()
     return totals
