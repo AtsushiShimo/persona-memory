@@ -61,21 +61,41 @@ def main() -> int:
             episode_id = save_episode(conn, role="user", content=prompt, session_id=session_id)
 
             # ── boot 層 dirty 再注入 (§8.1) ──
+            # Phase 5 (0.7.4): Cozo に fact があれば Cozo dirty を優先.
+            # Cozo が空 (= upgrade-cozo 直後で write が未稼働) なら SQLite fallback.
             from scripts.boot.inject import (
                 clear_dirty, fetch_boot_facts, format_boot_facts, is_dirty,
             )
+            from scripts.db_cozo.wire import (
+                cozo_db_present, cozo_db_path_for, maybe_cozo_full_recall,
+                maybe_cozo_save_episode, maybe_cozo_topic_shift,
+            )
+            cozo_active = cozo_db_present(db_path)
             boot_section = ""
-            if is_dirty(conn):
+            cozo_boot_used = False
+            if cozo_active:
+                try:
+                    from scripts.db_cozo.connection import init_db as _cozo_init_db
+                    from scripts.db_cozo.fact_persist import (
+                        clear_boot_dirty as _cozo_clear_boot_dirty,
+                        fetch_boot_facts as _cozo_fetch_boot_facts,
+                        is_boot_dirty as _cozo_is_boot_dirty,
+                    )
+                    _cclient = _cozo_init_db(cozo_db_path_for(db_path))
+                    if _cozo_is_boot_dirty(_cclient):
+                        cfacts = _cozo_fetch_boot_facts(_cclient)
+                        if cfacts:
+                            boot_section = format_boot_facts(cfacts)
+                            _cozo_clear_boot_dirty(_cclient)
+                            cozo_boot_used = True
+                except Exception as e:
+                    sys.stderr.write(f"[persona-memory] cozo boot failed: {e}\n")
+            if not cozo_boot_used and is_dirty(conn):
                 boot_section = format_boot_facts(fetch_boot_facts(conn))
                 clear_dirty(conn)
 
             # ── Cozo 経路 (.cozo.db 存在時 → メイン recall として使う) ──
             cozo_section = ""
-            from scripts.db_cozo.wire import (
-                cozo_db_present, maybe_cozo_full_recall,
-                maybe_cozo_save_episode, maybe_cozo_topic_shift,
-            )
-            cozo_active = cozo_db_present(db_path)
             try:
                 # Phase 4: 新発話を保存する前に話題シフトを判定して topic_id を決定.
                 # 同 session 内で話題が変わったら自動的に新 topic に切替.

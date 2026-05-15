@@ -1,6 +1,6 @@
 {
   "name": "persona-memory",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "description": "Local-first persistent memory for Claude Code agents — per-persona SQLite + sqlite-vec store with Ollama-driven write LLM (fact extraction + supersedes) and recall LLM (keyword-intercept search). Survives /clear and session restarts.",
   "author": {
     "name": "persona-memory contributors"

@@ -35,6 +35,21 @@ from scripts.write.extract import (
 from scripts.write.persist import apply_candidate
 from scripts.write.similarity import find_match
 
+# Phase 5 (0.7.4): Cozo 並列保存 — SQLite に書く直後に同じ candidate を
+# Cozo にも apply して、 Cozo を将来の単独 source of truth にする準備.
+# Cozo DB 不在 (= 旧バージョン install で upgrade-cozo 未実行) の場合は
+# skip して SQLite のみ走らせる.
+try:
+    from scripts.db_cozo.connection import init_db as _cozo_init_db
+    from scripts.db_cozo.fact_persist import (
+        apply_candidate as _cozo_apply_candidate,
+        find_match as _cozo_find_match,
+    )
+    from scripts.db_cozo.wire import cozo_db_path_for, cozo_db_present
+    _COZO_AVAILABLE = True
+except ImportError:
+    _COZO_AVAILABLE = False
+
 EMBED_MODEL = os.environ.get("PERSONA_EMBED_MODEL", "nomic-embed-text")
 # write 側のバッファは広めに取る (= 多ターンに渡る議論で確定した決定を、
 # その確定ターンで即時 fact 化するため)。recall 側の BUFFER_N=3 とは独立。
@@ -304,6 +319,17 @@ def process_episode(
     if not candidates:
         return []
 
+    # Cozo 並列 apply のため client を 1 度だけ初期化 (= per-episode 1 connection).
+    cozo_client = None
+    if _COZO_AVAILABLE:
+        try:
+            db_path = get_db_path()
+            if db_path is not None and cozo_db_present(db_path):
+                cozo_client = _cozo_init_db(cozo_db_path_for(db_path))
+        except Exception as e:
+            sys.stderr.write(f"[persona-memory] cozo init failed: {e}\n")
+            cozo_client = None
+
     results: list[tuple[FactCandidate, str]] = []
     for cand, embedding in zip(candidates, cand_embeds):
         match = find_match(conn, cand.category, cand.key, embedding)
@@ -321,6 +347,20 @@ def process_episode(
         action = apply_candidate(
             conn, cand, match, embedding, source="conversation", reason=cand.reason,
         )
+        # Phase 5: Cozo にも同じ candidate を独立に apply (id 採番は独立).
+        if cozo_client is not None:
+            try:
+                cmatch = _cozo_find_match(
+                    cozo_client, cand.category, cand.key, embedding,
+                )
+                _cozo_apply_candidate(
+                    cozo_client, cand, cmatch, embedding,
+                    source="conversation", reason=cand.reason,
+                )
+            except Exception as e:
+                sys.stderr.write(
+                    f"[persona-memory] cozo apply_candidate failed: {e}\n",
+                )
         results.append((cand, action))
     return results
 
