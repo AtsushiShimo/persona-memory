@@ -20,6 +20,7 @@ from scripts.boot.inject import (
 )
 from scripts.db.connection import connect
 from scripts.hooks.spawn import (
+    spawn_cozo_graph_backfill, spawn_cozo_topic_summary_backfill,
     spawn_prewarm, spawn_topic_summary_backfill, spawn_write,
 )
 from scripts.shared.env import get_db_path
@@ -71,8 +72,16 @@ def main() -> int:
     # 最初の発話時の cold start (30-60s) を回避. fail-open.
     spawn_prewarm()
 
-    # 0.6.24: summary 未生成の topic を 1 件遡及生成 (背景, fail-open).
+    # 0.6.24: summary 未生成の topic を 1 件遡及生成 (旧 SQLite, 背景, fail-open).
     spawn_topic_summary_backfill()
+
+    # 0.7.6: Cozo 側の救済 backfill を自動発火 (detach, fail-open).
+    # マスターが手動コマンドを叩く必要は無い. 既存ユーザーが新方式に
+    # 切り替えた直後の旧データを段階的に再構成するため.
+    # - topic_summary_emb 未生成 topic に summary 後付け
+    # - 議論ノード未生成 episode に対する graph backfill (重い処理. 多重起動 lock)
+    spawn_cozo_topic_summary_backfill(db_path)
+    spawn_cozo_graph_backfill(db_path)
 
     # 未処理があれば detach で write を流す (本処理 = 注入は完了済み)
     if pending_ids:

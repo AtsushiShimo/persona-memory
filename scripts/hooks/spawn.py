@@ -88,6 +88,100 @@ def spawn_topic_summary_backfill() -> None:
         pass
 
 
+def spawn_cozo_topic_summary_backfill(db_path) -> None:
+    """0.7.3: Cozo の topic_summary_emb が未生成な topic を遡及救済する detach 起動.
+
+    対象は `topic.summary` null or `topic_summary_emb` 行無しの topic. 軽量
+    light LLM で短い summary を生成 → embedding 化 → upsert. 1 session で
+    全部処理する設計 (.cozo.db が大きい場合は数十秒〜数分かかる. detach なので
+    SessionStart 体感は影響なし).
+
+    PERSONA_TOPIC_DISABLE / PERSONA_TOPIC_SUMMARY_DISABLE で opt-out.
+    マスターがコマンドを手動で叩く必要は無い経路.
+    """
+    if os.environ.get("PERSONA_TOPIC_DISABLE", "").strip() == "1":
+        return
+    if os.environ.get("PERSONA_TOPIC_SUMMARY_DISABLE", "").strip() == "1":
+        return
+    if db_path is None:
+        return
+    # Cozo DB 存在チェック (旧 SQLite のみのユーザーには起動しない)
+    from pathlib import Path
+    sqlite_db = Path(db_path)
+    cozo_db = sqlite_db.with_suffix(".cozo.db")
+    if not cozo_db.exists():
+        return
+    try:
+        subprocess.Popen(
+            [sys.executable, "-m", "scripts.db_cozo.backfill_topic_summary",
+             "--db", str(cozo_db)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except Exception:
+        pass
+
+
+def spawn_cozo_graph_backfill(db_path) -> None:
+    """0.7.3: Cozo の discussion_node が未生成な episode を遡及救済する detach 起動.
+
+    対象は episode_id に紐付く discussion_node が存在しない (= まだ
+    backfill が当たっていない) episode. 重い処理 (1 episode 5-15s) なので
+    完走に時間がかかるが、 detach + start_new_session で session を跨いでも
+    継続実行される. 同じ DB に対して並列起動するのを避けるため、
+    ロックファイル (cozo.backfill_graph.lock) で多重起動防止する.
+
+    PERSONA_GRAPH_BACKFILL_DISABLE=1 で opt-out.
+    マスターがコマンドを手動で叩く必要は無い経路.
+    """
+    if os.environ.get("PERSONA_GRAPH_BACKFILL_DISABLE", "").strip() == "1":
+        return
+    if db_path is None:
+        return
+    from pathlib import Path
+    sqlite_db = Path(db_path)
+    cozo_db = sqlite_db.with_suffix(".cozo.db")
+    if not cozo_db.exists():
+        return
+    # 多重起動防止 lockfile (PID を書き込んで存在チェック)
+    lock = cozo_db.with_suffix(".cozo.db.backfill.lock")
+    if lock.exists():
+        try:
+            pid_str = lock.read_text().strip()
+            pid = int(pid_str) if pid_str else 0
+        except Exception:
+            pid = 0
+        if pid > 0:
+            try:
+                os.kill(pid, 0)  # 生存確認
+                return  # 既に動いている → skip
+            except OSError:
+                pass  # PID 不在 → stale lock として上書き
+        try:
+            lock.unlink()
+        except Exception:
+            pass
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "scripts.db_cozo.backfill_graph",
+             "--db", str(cozo_db), "--no-progress"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+        try:
+            lock.write_text(str(proc.pid))
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 def spawn_prewarm() -> None:
     """SessionStart で Ollama heavy + embed モデルを background で warm-up.
 

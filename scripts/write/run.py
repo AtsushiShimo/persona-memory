@@ -308,6 +308,25 @@ def process_episode(
         except Exception as e:
             sys.stderr.write(f"[persona-memory] add_node failed: {e}\n")
 
+    # 0.7.6 Cozo リアルタイム議論グラフ生成.
+    # 旧 SQLite 経路 (上の add_node) と独立に Cozo の discussion_node /
+    # discussion_edge を育てる. backfill 不要の状態を作るのが目的.
+    # 抽出器は db_cozo.graph_extract.extract_node_with_relation (prev_relation + target).
+    try:
+        sqlite_db_path = get_db_path()
+        if sqlite_db_path is not None:
+            from scripts.db_cozo.wire import maybe_cozo_extract_graph
+            maybe_cozo_extract_graph(
+                sqlite_db_path,
+                role=episode["role"],
+                content=episode["content"],
+                session_id=episode["session_id"],
+                buffer=buffer,
+                episode_id=episode_id,
+            )
+    except Exception as e:
+        sys.stderr.write(f"[persona-memory] cozo extract_graph dispatch failed: {e}\n")
+
     # 0.6.24 トピック記憶: 抽出した tag を topic_tags + topic_tag_embeddings へ.
     if extracted_tags and episode.get("topic_id"):
         try:

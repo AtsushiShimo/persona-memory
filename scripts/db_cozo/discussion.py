@@ -68,6 +68,31 @@ def add_edge(
     )
 
 
+def get_recent_nodes_in_topic(
+    client: Client, topic_id: str, limit: int = 10,
+) -> list[dict]:
+    """同 topic_id に紐付く episode 経由の node を最新 N 件返す.
+
+    0.7.6 「離れたノードへの意味的エッジ」 用. LLM に候補として渡し、
+    target_id で参照させる.
+    """
+    if not topic_id:
+        return []
+    res = client.run(
+        "?[id, kind, title, state, episode_id] := "
+        "*discussion_node{id, kind, title, state, episode_id}, "
+        "*episode{id: episode_id, topic_id: $tid} "
+        ":order -id :limit $lim",
+        {"tid": topic_id, "lim": limit},
+    )
+    rows = res.get("rows", [])
+    return [
+        {"id": r[0], "kind": r[1], "title": r[2],
+         "state": r[3], "episode_id": r[4]}
+        for r in rows
+    ]
+
+
 def get_last_node_in_topic(
     client: Client, topic_id: str,
 ) -> dict | None:

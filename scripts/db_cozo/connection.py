@@ -115,6 +115,19 @@ RELATION_DEFS = [
         embedding: <F32; 768>? default null,
     }
     """,
+    # 0.7.6 「生きてる話題箱」 設計用. topic_id ごとに 1 件、 summary 本文と
+    # その embedding を保持. 新発話を embedding 化して近接検索することで
+    # 「並列に動いている話題のうちどれに属するか」 を判定する.
+    # topic.summary とは別管理 (topic.summary は人間可読の表示用、
+    # こちらは照合用. 更新は同時に行う).
+    """
+    :create topic_summary_emb {
+        topic_id: String =>
+        summary: String,
+        embedding: <F32; 768>? default null,
+        updated_at: String,
+    }
+    """,
     """
     :create topic_relation {
         from_topic_id: String, to_topic_id: String, kind: String =>
@@ -176,6 +189,7 @@ HNSW_INDEXES = [
     ("episode", "vec_idx", "[embedding]"),
     ("discussion_node", "vec_idx", "[embedding]"),
     ("topic_tag", "vec_idx", "[embedding]"),
+    ("topic_summary_emb", "vec_idx", "[embedding]"),
     ("recall_trigger", "vec_idx", "[query_embedding]"),
 ]
 

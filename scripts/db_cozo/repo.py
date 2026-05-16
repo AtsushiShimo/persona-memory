@@ -117,6 +117,189 @@ def ensure_topic(client: Client, topic_id: str) -> None:
         )
 
 
+# ── topic_summary_emb 操作 (0.7.6 「生きてる話題箱」 設計) ─────────────────
+
+def upsert_topic_summary_emb(
+    client: Client,
+    topic_id: str,
+    summary: str,
+    embedding: list[float] | None,
+) -> None:
+    """topic ごとの summary 本文 + embedding を upsert.
+
+    topic.summary (人間可読の表示用) も同時に更新する. 両者は同じ文字列を保持.
+    """
+    ts = _now_ts()
+    if embedding and len(embedding) > 0:
+        client.run(
+            "?[topic_id, summary, embedding, updated_at] <- "
+            "[[$tid, $sum, vec($emb), $ts]] "
+            ":put topic_summary_emb {topic_id => summary, embedding, updated_at}",
+            {"tid": topic_id, "sum": summary, "emb": embedding, "ts": ts},
+        )
+    else:
+        client.run(
+            "?[topic_id, summary, updated_at] <- [[$tid, $sum, $ts]] "
+            ":put topic_summary_emb {topic_id => summary, updated_at}",
+            {"tid": topic_id, "sum": summary, "ts": ts},
+        )
+    # topic.summary も同期更新 (人間可読表示・既存コード互換).
+    res = client.run(
+        "?[t, c] := *topic{id: $id, title: t, created_at: c}",
+        {"id": topic_id},
+    )
+    rows = res.get("rows", [])
+    if rows:
+        title, created_at = rows[0]
+        client.run(
+            "?[id, title, summary, created_at, last_active_at] <- "
+            "[[$id, $title, $sum, $cat, $ts]] "
+            ":put topic {id => title, summary, created_at, last_active_at}",
+            {"id": topic_id, "title": title, "sum": summary,
+             "cat": created_at, "ts": ts},
+        )
+    else:
+        # topic 行が無ければ作る (summary 付きで)
+        client.run(
+            "?[id, summary, created_at, last_active_at] <- "
+            "[[$id, $sum, $ts, $ts]] "
+            ":put topic {id => summary, created_at, last_active_at}",
+            {"id": topic_id, "sum": summary, "ts": ts},
+        )
+
+
+def get_topic_summary_emb(client: Client, topic_id: str) -> dict | None:
+    """topic_id の summary レコードを返す (summary, embedding, updated_at)."""
+    res = client.run(
+        "?[summary, embedding, updated_at] := "
+        "*topic_summary_emb{topic_id: $tid, summary, embedding, updated_at}",
+        {"tid": topic_id},
+    )
+    rows = res.get("rows", [])
+    if not rows:
+        return None
+    r = rows[0]
+    return {"summary": r[0], "embedding": r[1], "updated_at": r[2]}
+
+
+def find_alive_topics_by_summary_emb(
+    client: Client,
+    embedding: list[float],
+    alive_hours: int = 168,
+    top_k: int = 5,
+    distance_max: float = 0.5,
+) -> list[dict]:
+    """新発話 embedding に近い「生きてる」 topic を summary 経由で検索.
+
+    alive_hours: topic.last_active_at が現在からこの時間内なら「生きてる」.
+    distance_max: cosine 距離の閾値. これより近いものだけ返す.
+
+    戻り値: [{"topic_id": str, "distance": float, "summary": str}, ...] (距離昇順).
+    """
+    if not embedding:
+        return []
+    cutoff = (datetime.now(JST) - timedelta(hours=alive_hours)).strftime("%Y-%m-%d %H:%M:%S")
+    res = client.run(
+        "?[dist, topic_id, summary] := "
+        "~topic_summary_emb:vec_idx{topic_id, summary | "
+        "query: vec($q), k: $k, ef: 50, bind_distance: dist}, "
+        "*topic{id: topic_id, last_active_at}, "
+        "last_active_at >= $cutoff, "
+        "dist < $dmax "
+        ":order dist",
+        {"q": embedding, "k": top_k, "cutoff": cutoff, "dmax": distance_max},
+    )
+    return [
+        {"distance": r[0], "topic_id": r[1], "summary": r[2]}
+        for r in res.get("rows", [])
+    ]
+
+
+def list_alive_topic_ids(client: Client, alive_hours: int = 168) -> list[str]:
+    """生きてる topic の id 列を返す (last_active_at desc)."""
+    cutoff = (datetime.now(JST) - timedelta(hours=alive_hours)).strftime("%Y-%m-%d %H:%M:%S")
+    res = client.run(
+        "?[id, last_active_at] := *topic{id, last_active_at}, "
+        "last_active_at >= $cutoff "
+        ":order -last_active_at",
+        {"cutoff": cutoff},
+    )
+    return [r[0] for r in res.get("rows", [])]
+
+
+def add_topic_relation(
+    client: Client, from_topic_id: str, to_topic_id: str, kind: str = "派生",
+) -> None:
+    """topic 間のエッジを追加 (upsert). 同じ (from, to, kind) は重複扱い."""
+    if not from_topic_id or not to_topic_id or from_topic_id == to_topic_id:
+        return
+    ts = _now_ts()
+    client.run(
+        "?[from_topic_id, to_topic_id, kind, ts] <- [[$f, $t, $k, $ts]] "
+        ":put topic_relation {from_topic_id, to_topic_id, kind => ts}",
+        {"f": from_topic_id, "t": to_topic_id, "k": kind, "ts": ts},
+    )
+
+
+def find_related_topics_by_summary_emb(
+    client: Client,
+    embedding: list[float],
+    alive_hours: int = 168,
+    top_k: int = 5,
+    distance_min: float = 0.35,
+    distance_max: float = 0.55,
+    exclude_topic_id: str | None = None,
+) -> list[dict]:
+    """0.7.6: 新 topic と「関連はあるが同一ではない」 既存 topic を返す.
+
+    識別閾値 (distance_min) より遠い = 同一話題ではない、 かつ
+    関連閾値 (distance_max) より近い = 何らかの関連がある、 という帯域.
+    マインドマップ的な topic_relation 自動生成に使う.
+    """
+    if not embedding:
+        return []
+    cutoff = (datetime.now(JST) - timedelta(hours=alive_hours)).strftime("%Y-%m-%d %H:%M:%S")
+    res = client.run(
+        "?[dist, topic_id, summary] := "
+        "~topic_summary_emb:vec_idx{topic_id, summary | "
+        "query: vec($q), k: $k, ef: 50, bind_distance: dist}, "
+        "*topic{id: topic_id, last_active_at}, "
+        "last_active_at >= $cutoff, "
+        "dist >= $dmin, dist < $dmax "
+        ":order dist",
+        {"q": embedding, "k": top_k, "cutoff": cutoff,
+         "dmin": distance_min, "dmax": distance_max},
+    )
+    out = []
+    for r in res.get("rows", []):
+        tid = r[1]
+        if exclude_topic_id and tid == exclude_topic_id:
+            continue
+        out.append({"distance": r[0], "topic_id": tid, "summary": r[2]})
+    return out
+
+
+def touch_topic(client: Client, topic_id: str) -> None:
+    """topic.last_active_at を現在時刻に更新 (= 「触った」 印)."""
+    ts = _now_ts()
+    res = client.run(
+        "?[title, summary, created_at] := "
+        "*topic{id: $id, title, summary, created_at}",
+        {"id": topic_id},
+    )
+    rows = res.get("rows", [])
+    if not rows:
+        return
+    title, summary, created_at = rows[0]
+    client.run(
+        "?[id, title, summary, created_at, last_active_at] <- "
+        "[[$id, $title, $sum, $cat, $ts]] "
+        ":put topic {id => title, summary, created_at, last_active_at}",
+        {"id": topic_id, "title": title, "sum": summary,
+         "cat": created_at, "ts": ts},
+    )
+
+
 # ── 検索系 (recall パイプライン用) ───────────────────────────────────────
 
 def fetch_episode(client: Client, episode_id: int) -> dict | None:
