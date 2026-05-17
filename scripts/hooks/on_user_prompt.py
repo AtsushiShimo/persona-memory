@@ -55,6 +55,66 @@ def main() -> int:
 
     session_id = get_session_id_from_payload(payload)
     additional_context = ""
+
+    # ── 反省モード state 取得 + 怒気検知 (0.7.7) ──
+    # Cozo に reflection_state relation を持つため、 Cozo 不在時は反省機能を
+    # 全 bypass (SQLite-only ペルソナ後方互換).
+    reflection_block = ""
+    lesson_prompt_block = ""
+    cozo_db_path_for_reflection = None
+    try:
+        from scripts.db_cozo.wire import cozo_db_path_for, cozo_db_present
+        if cozo_db_present(db_path):
+            cozo_db_path_for_reflection = cozo_db_path_for(db_path)
+    except Exception:
+        cozo_db_path_for_reflection = None
+    if cozo_db_path_for_reflection is not None:
+        try:
+            from scripts.db_cozo.connection import init_db as _r_init
+            from scripts.reflection.detect import detect_anger
+            from scripts.reflection.instruction import (
+                format_continue_instruction, format_enter_instruction,
+            )
+            from scripts.reflection.lesson import (
+                format_lesson_block_for_prompt, match_lessons_for_prompt,
+            )
+            from scripts.reflection.state import (
+                clear as _r_clear, enter as _r_enter,
+                get_state as _r_get, increment_turn as _r_inc,
+                should_force_clear as _r_force,
+            )
+            _rcli = _r_init(cozo_db_path_for_reflection)
+            rstate = _r_get(_rcli)
+
+            angry, phrase = detect_anger(prompt, OllamaClient())
+            if angry:
+                # 反省モード突入 (or 継続) + instruction 注入
+                # episode_id はまだ採番していないので暫定 0. 後で書き換えはしない
+                # (= state の trigger_episode_id は主に統計目的).
+                _r_enter(_rcli, episode_id=0, anger_phrase=phrase)
+                reflection_block = format_enter_instruction(phrase)
+            elif rstate.active:
+                # 怒気なし + モード中 → 継続 instruction 注入 + ターン加算
+                turn = _r_inc(_rcli)
+                if _r_force(_rcli):
+                    _r_clear(_rcli)
+                else:
+                    reflection_block = format_continue_instruction(turn)
+
+            # lesson マッチ (発話意図) → 通常 recall に追加して上位提示
+            try:
+                lesson_matches = match_lessons_for_prompt(_rcli, prompt)
+                lesson_prompt_block = format_lesson_block_for_prompt(
+                    lesson_matches,
+                )
+            except Exception as e:
+                sys.stderr.write(
+                    f"[persona-memory] lesson match failed: {e}\n",
+                )
+        except Exception as e:
+            sys.stderr.write(
+                f"[persona-memory] reflection wire failed: {e}\n",
+            )
     try:
         conn = connect(db_path)
         try:
@@ -128,8 +188,14 @@ def main() -> int:
                 except Exception as e:
                     sys.stderr.write(f"[persona-memory] recall failed: {e}\n")
 
+            # 反省モード instruction と lesson ブロックは **最上位** に置く.
+            # cozo_section / boot_section / recall_section より優先表示することで
+            # main agent が確実に従う.
             additional_context = "\n\n".join(
-                s for s in (cozo_section, boot_section, recall_section) if s
+                s for s in (
+                    reflection_block, lesson_prompt_block,
+                    cozo_section, boot_section, recall_section,
+                ) if s
             )
         finally:
             conn.close()

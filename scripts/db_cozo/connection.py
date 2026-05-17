@@ -181,6 +181,29 @@ RELATION_DEFS = [
         hit_episode_ids: String default '[]',
     }
     """,
+    # 0.7.7 反省モード: lesson fact に紐付く想起トリガー.
+    # 1 lesson に複数 trigger (例: キャッシュ編集禁止 → path_edit + path_read).
+    # kind: 'path_edit' / 'path_read' / 'bash_cmd' / 'prompt_intent' / 'general'
+    # pattern: 正規表現 (Python re). マッチ時に action を発火.
+    # action: 'block' (PreToolUse で deny) / 'warn' (注意喚起のみ).
+    """
+    :create lesson_trigger {
+        id: Int =>
+        lesson_fact_id: Int,
+        kind: String,
+        pattern: String,
+        action: String default 'warn',
+        created_at: String,
+    }
+    """,
+    # 0.7.7 反省モード state. プロセス間で共有するため Cozo に置く.
+    # active=true の間、 全応答に謝罪継続 instruction を強制注入する.
+    """
+    :create reflection_state {
+        key: String =>
+        value: String,
+    }
+    """,
 ]
 
 # HNSW index 定義 (relation, index 名, fields).

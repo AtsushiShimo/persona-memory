@@ -339,6 +339,84 @@ def list_facts(limit: int = 100) -> dict[str, Any]:
 
 
 @mcp.tool()
+def register_lesson_triggers(
+    lesson_key: str,
+    triggers: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Register想起トリガー for an existing lesson fact (反省モード 0.7.7).
+
+    呼び出し前提: `write_fact(category="lesson", key=<lesson_key>, ...)` で
+    lesson 本体を保存済みであること. 本ツールは、 その lesson に対して
+    「いつ思い出させるか」 のトリガー条件を Cozo に登録する.
+
+    Args:
+      lesson_key: 紐付け先 lesson fact の key (category='lesson' 固定).
+      triggers: 各トリガーの dict のリスト. 各 dict は:
+        - kind: "path_edit" / "path_read" / "bash_cmd" / "prompt_intent" / "general"
+        - pattern: 正規表現 (Python re, 大文字小文字区別なし).
+                   path_edit/path_read は絶対パスに対する正規表現.
+                   bash_cmd はコマンド文字列に対する正規表現.
+                   prompt_intent はユーザー発話文に対する正規表現.
+        - action: "block" (= 該当操作を停止) / "warn" (= 警告のみ).
+                  default は "warn".
+
+    旧 trigger があれば一掃 (= 同 lesson_key に対する登録は上書き). lesson 本体が
+    SQLite/Cozo どちらにも見当たらない場合は error を返す.
+
+    Cozo 不在環境 (旧 SQLite-only ペルソナ) では機能しない. その場合は
+    /persona-memory:upgrade-cozo を先に実行する必要がある.
+
+    Returns:
+      {"registered": <int>, "lesson_fact_id": <int>} on success.
+      {"error": "..."} on failure.
+    """
+    import sys
+    from pathlib import Path
+    ROOT = Path(__file__).resolve().parent.parent
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from scripts.db_cozo.connection import init_db as _cozo_init
+    from scripts.db_cozo.wire import cozo_db_path_for, cozo_db_present
+    from scripts.reflection.lesson import (
+        delete_triggers_for, get_lesson_by_key, register_trigger,
+    )
+
+    sqlite_path = db.db_path()
+    if not cozo_db_present(sqlite_path):
+        return {"error": "Cozo DB が見つかりません. /persona-memory:upgrade-cozo を実行してください."}
+    cozo_path = cozo_db_path_for(sqlite_path)
+    try:
+        client = _cozo_init(cozo_path)
+    except Exception as e:
+        return {"error": f"Cozo 接続失敗: {e}"}
+
+    lesson = get_lesson_by_key(client, lesson_key)
+    if lesson is None:
+        return {
+            "error": f"lesson が見つかりません (key={lesson_key}). "
+                     "先に write_fact(category='lesson', key=..., value=..., importance=10) を実行してください."
+        }
+
+    delete_triggers_for(client, lesson.fact_id)
+    registered = 0
+    for t in triggers or []:
+        kind = str(t.get("kind", "")).strip()
+        pattern = str(t.get("pattern", "")).strip()
+        action = str(t.get("action", "warn")).strip() or "warn"
+        if kind not in ("path_edit", "path_read", "bash_cmd",
+                        "prompt_intent", "general"):
+            continue
+        if not pattern:
+            continue
+        if action not in ("block", "warn"):
+            action = "warn"
+        register_trigger(client, lesson.fact_id, kind, pattern, action)
+        registered += 1
+
+    return {"registered": registered, "lesson_fact_id": lesson.fact_id}
+
+
+@mcp.tool()
 async def health_check() -> dict[str, Any]:
     """Comprehensive health check.
 

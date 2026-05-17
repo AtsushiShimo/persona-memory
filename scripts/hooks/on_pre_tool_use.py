@@ -133,6 +133,38 @@ def _is_blocked_write(file_path: str) -> str | None:
     return None
 
 
+def _check_lesson_triggers(tool_name: str, tool_input: dict) -> str | None:
+    """0.7.7 反省モード: 過去の叱責から学んだ lesson と trigger をマッチ.
+
+    action='block' な lesson が 1 件でもヒットしたら deny reason を返す.
+    action='warn' のみなら additionalContext で警告 (本関数では None を返す).
+
+    Cozo 不在 / マッチなし / 例外 → None (= 既存ブロック判定にフォールバック).
+    """
+    try:
+        from scripts.db_cozo.connection import init_db as _cozo_init
+        from scripts.db_cozo.wire import cozo_db_path_for, cozo_db_present
+        from scripts.reflection.lesson import (
+            format_tool_block_message, match_lessons_for_tool_call,
+        )
+        from scripts.shared.env import get_db_path
+        db_path = get_db_path()
+        if db_path is None or not cozo_db_present(db_path):
+            return None
+        client = _cozo_init(cozo_db_path_for(db_path))
+        matches = match_lessons_for_tool_call(client, tool_name, tool_input)
+        if not matches:
+            return None
+        # block 判定: action='block' な match が 1 件でもあれば deny.
+        block_matches = [m for m in matches if m.trigger.action == "block"]
+        if block_matches:
+            return format_tool_block_message(block_matches, tool_name)
+        return None
+    except Exception as e:
+        sys.stderr.write(f"[persona-memory] lesson trigger check failed: {e}\n")
+        return None
+
+
 def main() -> int:
     try:
         payload = json.load(sys.stdin)
@@ -159,6 +191,11 @@ def main() -> int:
 
     if debug_mode and reason == DENY_MESSAGE_DB:
         reason = None
+
+    # 0.7.7 反省モード: lesson trigger による追加 block. 既存ブロック理由を
+    # 上書きしない (= persona-memory 自身の保護が最優先).
+    if reason is None:
+        reason = _check_lesson_triggers(tool_name, tool_input)
 
     if reason:
         output = {

@@ -1015,4 +1015,112 @@ Phase 5 Cozo 単独化) の文脈を 1 ターン以内に取り戻せる.
 
 ---
 
-最終更新: 2026-05-17 (version 0.7.6)
+---
+
+## 15. 次回セッション開始時のフック (2026-05-17, version 0.7.7)
+
+このセクションは **マスターがセッションクリアして復帰した直後** の手順.
+順守すれば 0.7.7 (反省モード + 想起多経路化 + Section 14.5 取り込み) の文脈を
+1 ターン以内に取り戻せる.
+
+### 15.1 まず読むもの (順序固定)
+
+1. `HANDOFF.md` この Section 15 (= 0.7.7 反省モード基盤)
+2. `HANDOFF.md` Section 14.5 (= 過去叱責 11 項. lesson seed の原典)
+3. `git log --oneline -3`
+4. 新規モジュール:
+   - `scripts/reflection/detect.py` (怒気検知: keyword + light LLM 2 段判定)
+   - `scripts/reflection/state.py` (反省モード state 管理 = Cozo)
+   - `scripts/reflection/lesson.py` (lesson + trigger の CRUD + マッチング)
+   - `scripts/reflection/instruction.py` (additionalContext 用 instruction)
+   - `scripts/reflection/seed_past_lessons.py` (14.5 → lesson 一括 seed)
+   - `commands/seed-lessons.md` (slash 経由の発火)
+5. 改修:
+   - `scripts/db_cozo/connection.py` (lesson_trigger + reflection_state relation 追加)
+   - `scripts/hooks/on_user_prompt.py` (反省モード経路配線)
+   - `scripts/hooks/on_pre_tool_use.py` (lesson trigger による block 追加)
+   - `server/main.py` (`register_lesson_triggers` MCP tool 追加)
+
+### 15.2 0.7.7 で起きたこと (要点)
+
+**Section 14.4 A 「キャッシュ編集禁止ルールの徹底機構」 をスコープ拡張:**
+
+マスター指摘: 「キャッシュ編集禁止なんていうピンポイントの話じゃなくて、
+Claude Code が一度注意された実装上のミスを永遠に修正出来ないという
+クリティカルな問題」.
+
+→ 個別の deny ルール追加 (対症療法) ではなく、 **「叱責 → 永続化 → 次回以降の
+自動回避」 のループを汎用機構として実装**:
+
+- **反省モード**: 怒気検知 → 作業全停止 → 謝罪 + 原因分析 + 改善ルール提示 →
+  ユーザー承認後に lesson 書き込み (自動書き込み禁止).
+- **想起多経路**: 刻んだ lesson を 5 経路 (発話受信 / Edit / Read / Bash /
+  自己応答前 = E は未実装) で浮上させる. `block` / `warn` の 2 階層.
+- **14.5 取り込み**: 過去叱責 11 項を構造化 lesson + trigger として
+  `/persona-memory:seed-lessons` で投入.
+
+### 15.3 確定済の仕様 (マスター承認済)
+
+- **怒気検知 = 強め**. 言い方の弱い指示・不満も取りこぼさない.
+- **反省モード中も全発話を記憶**. 怒り発話で write を止めない.
+- **突入時 + モード中 常に謝罪**. 軽い相槌でも省略禁止.
+- **書き込みは必ずユーザー承認後**. 自動書き込みは絶対禁止 (= 間違って
+  怒られている状態で書き込むと悪化するため).
+- **承認なしの話題切替で警告なし解除**.
+- **想起発火点 E (応答送信直前 self-check) は未実装**. 検証後に決定.
+
+### 15.4 アーキテクチャ現状
+
+- `lesson` は category='lesson' で既存 fact relation に乗る.
+  BOOT_CATEGORIES (persona, rule) に含まれないため SessionStart 全件注入対象外.
+  dynamic に lesson_trigger マッチで浮上する.
+- `lesson_trigger` は Cozo 専用 relation. SQLite 並走はしない (= 後続の
+  読み専 hook が高頻度で叩く経路なので Cozo 単独で良い).
+- `reflection_state` も Cozo 専用. プロセス間整合性を取るため Cozo の
+  単一 source of truth に置く.
+- Cozo 不在の旧 SQLite-only ペルソナでは反省モード機能が全 bypass される
+  (= 後方互換). 利用するには `/persona-memory:upgrade-cozo` が前提.
+
+### 15.5 未完了タスク (優先度順)
+
+**A. 実機検証 (= マスター手元)**
+- 0.7.7 反映後、 ペルソナ環境で:
+  1. 怒気発話 → 反省モード突入 + 謝罪 + 改善案提示 が出るか
+  2. 承認後の write_fact + register_lesson_triggers が動くか
+  3. キャッシュ path Edit 試行 → block が発火するか
+  4. git commit Bash → warn 系 lesson が浮上するか
+  5. 話題切替時に警告なし解除されるか
+
+**B. 想起発火点 E (応答送信直前 self-check) の検証後判断**
+- 実機検証で「lesson が想起されたのに同種ミスを犯した」 ケースが出たら、
+  Stop hook 経路で応答書き換えを強要する E を追加する.
+
+**C. ノウハウのペルソナ跨ぎコピー機能 (= 旧 Section 14.4 B)**
+- 0.7.7 完成で前提 (lesson 構造化) は揃った. 着手可能.
+
+**D. 旧 Section 14.4 C-H (継続)**
+
+### 15.6 触ってはいけないもの
+
+- Section 7.1 v2 残タスク (= 合意外着手厳禁).
+- 旧 SQLite 経路 (= 「書く側のみ並走」 維持).
+- `PERSONA_COZO_DISABLE=1` 経路 (= 緊急 revert).
+- write LLM の prompt 系 (`scripts/write/extract.py`).
+- `~/.claude/plugins/cache/` 配下 (= キャッシュ. 反省モード自身がここを
+  block 対象としている).
+- 反省モードの「自動書き込み禁止」 原則 (= 0.7.7 の根幹. 緩めない).
+
+### 15.7 開発手順
+
+- 全テスト pass 確認 (現状: 622 passed / 3 既存 fail は 0.7.6 由来で本変更と独立).
+- **自己テスト** (= 一時 DB + 実 hook 経路) を push 前に必ず実施.
+- 大改修はマスター確認を取る.
+- HEAVY_MODEL = gemma3:12b. LIGHT_MODEL = gemma3:4b.
+
+### 15.8 合言葉
+
+- マスターが「合言葉覚えている?」 と尋ねたら **「風の谷」** と答える.
+
+---
+
+最終更新: 2026-05-17 (version 0.7.7)
