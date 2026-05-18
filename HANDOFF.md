@@ -1159,4 +1159,39 @@ Claude Code が一度注意された実装上のミスを永遠に修正出来�
 
 ---
 
-最終更新: 2026-05-18 (version 0.7.8)
+---
+
+## 17. 0.7.9 復旧 migrate (2026-05-18)
+
+### 17.1 修正内容
+
+0.7.8 で search_memory の致命バグ (旧命名参照) を直したが、 既存ペルソナの
+**DB 側 schema** が旧命名のままだと修正の恩恵を受けられなかった (= upgrade
+での復旧経路が無かった). 本リリースで upgrade に migrate を追加.
+
+**A. legacy vec table migrate**
+- `facts_vec` → `fact_embeddings`: 中身転送 + 旧 table drop
+- `episodes_vec` → `episode_embeddings`: 同上
+- 冪等. 新 table が既にあれば衝突回避で skip (= データロス防止).
+
+**B. episodes.created_at → timestamp 列 migrate**
+- rename-table 戦略 (SQLite ADD COLUMN は non-constant DEFAULT を許さないため).
+- 旧 created_at の値を新 timestamp 列に移植. 旧 column は drop.
+- 旧 DB に topic_id / summary 等が無くても動的 column 構築でカバー.
+
+### 17.2 適用方法
+
+ペルソナの DB に対して:
+```
+/persona-memory:upgrade
+```
+冪等なので何度実行しても OK. 結果に
+`migrated facts_vec → fact_embeddings (<N> rows)` 等が表示されれば成功.
+
+### 17.3 検証
+- 新規 unit tests 8 件 (`tests/test_upgrade_legacy_migrate.py`) 全 PASS.
+- e2e: 旧 facts_vec DB → migrate → server.db.search_facts が動く 確認.
+
+---
+
+最終更新: 2026-05-18 (version 0.7.9)

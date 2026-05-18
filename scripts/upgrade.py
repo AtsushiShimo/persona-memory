@@ -532,6 +532,124 @@ def _ensure_topic_tag_embeddings(conn, embedding_dim: int) -> bool:
     return True
 
 
+def _migrate_legacy_vec_tables(conn) -> dict:
+    """0.7.9 復旧 migrate: 旧命名 (facts_vec / episodes_vec) を現行命名
+    (fact_embeddings / episode_embeddings) へ転送 + 旧 table drop.
+
+    背景: 旧 `init-memory.py` で作られた DB は `facts_vec` / `episodes_vec`
+    命名のまま. 0.7.8 で MCP server を `fact_embeddings` / `episode_embeddings`
+    参照に修正したが、 旧命名のままの DB では search_memory が
+    "no such table: fact_embeddings" で失敗する. upgrade で復旧.
+
+    冪等: 旧 table が無ければ no-op. 新 table が既にあれば移行も skip.
+    戻り値: 移行された行数の集計 dict.
+    """
+    result = {"facts_vec_migrated": 0, "episodes_vec_migrated": 0}
+
+    def _has(name: str) -> bool:
+        return conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name=?", (name,),
+        ).fetchone() is not None
+
+    # facts_vec → fact_embeddings
+    if _has("facts_vec") and not _has("fact_embeddings"):
+        conn.execute(
+            f"CREATE VIRTUAL TABLE fact_embeddings USING vec0("
+            f"  fact_id INTEGER PRIMARY KEY,"
+            f"  embedding FLOAT[{EMBEDDING_DIM}] distance_metric=cosine"
+            f")"
+        )
+        rows = conn.execute(
+            "SELECT fact_id, embedding FROM facts_vec"
+        ).fetchall()
+        for fid, emb in rows:
+            conn.execute(
+                "INSERT INTO fact_embeddings(fact_id, embedding) VALUES (?, ?)",
+                (fid, emb),
+            )
+        conn.execute("DROP TABLE facts_vec")
+        conn.commit()
+        result["facts_vec_migrated"] = len(rows)
+
+    # episodes_vec → episode_embeddings
+    if _has("episodes_vec") and not _has("episode_embeddings"):
+        conn.execute(
+            f"CREATE VIRTUAL TABLE episode_embeddings USING vec0("
+            f"  episode_id INTEGER PRIMARY KEY,"
+            f"  embedding FLOAT[{EMBEDDING_DIM}] distance_metric=cosine"
+            f")"
+        )
+        rows = conn.execute(
+            "SELECT episode_id, embedding FROM episodes_vec"
+        ).fetchall()
+        for eid, emb in rows:
+            conn.execute(
+                "INSERT INTO episode_embeddings(episode_id, embedding) VALUES (?, ?)",
+                (eid, emb),
+            )
+        conn.execute("DROP TABLE episodes_vec")
+        conn.commit()
+        result["episodes_vec_migrated"] = len(rows)
+
+    return result
+
+
+def _migrate_episodes_timestamp_column(conn) -> bool:
+    """0.7.9 復旧 migrate: 旧 episodes.created_at しか無い DB に timestamp 列追加.
+
+    背景: 現行 schema.sql は `timestamp` 列のみ. 旧 DB に `created_at` 列だけ
+    残っていると server/db.append_episode が timestamp 列への INSERT で
+    "no such column" で失敗する.
+
+    戦略: rename-table パターン (SQLite ADD COLUMN は non-constant DEFAULT を
+    許さないため). episodes_new を新 schema で作って既存行をコピー、 旧 drop、
+    rename. 旧 created_at の値は新 timestamp に移植.
+
+    戻り値: 新規追加された場合 True.
+    """
+    cols = conn.execute("PRAGMA table_info(episodes)").fetchall()
+    names = {row[1] for row in cols}
+    if "timestamp" in names:
+        return False
+    if "created_at" not in names:
+        # どちらも無い (= テーブル自体が壊れている異常系) → 触らない
+        return False
+
+    # 既存 column の集合 (旧 DB は topic_id / summary 等を持たないことがある)
+    has_summary = "summary" in names
+    has_session = "session_id" in names
+    has_topic = "topic_id" in names
+
+    conn.execute("""
+        CREATE TABLE episodes_new (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          role        TEXT NOT NULL CHECK (role IN ('user','assistant')),
+          content     TEXT NOT NULL,
+          summary     TEXT,
+          session_id  TEXT NOT NULL DEFAULT '',
+          topic_id    TEXT,
+          timestamp   TEXT NOT NULL DEFAULT (datetime('now', '+9 hours'))
+        )
+    """)
+    # SELECT 列を動的構築. 存在しない column は NULL / '' で埋める.
+    summary_src = "summary" if has_summary else "NULL"
+    session_src = "COALESCE(session_id, '')" if has_session else "''"
+    topic_src = "topic_id" if has_topic else "NULL"
+    conn.execute(
+        f"INSERT INTO episodes_new "
+        f"(id, role, content, summary, session_id, topic_id, timestamp) "
+        f"SELECT id, role, content, {summary_src}, {session_src}, "
+        f"{topic_src}, created_at FROM episodes"
+    )
+    conn.execute("DROP TABLE episodes")
+    conn.execute("ALTER TABLE episodes_new RENAME TO episodes")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_episodes_session ON episodes(session_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_episodes_topic ON episodes(topic_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_episodes_timestamp ON episodes(timestamp)")
+    conn.commit()
+    return True
+
+
 def _migrate_config_env_to_relative(db_path: Path) -> str:
     """config.env の PERSONA_MEMORY_DB を絶対パスから ${CLAUDE_PROJECT_DIR} 基準に書き換える.
 
@@ -607,10 +725,30 @@ def upgrade(db_path: Path) -> dict[str, int]:
         "topic_tables_added": 0,
         "episodes_topic_id_added": 0,
         "topic_tag_embeddings_added": 0,
+        "facts_vec_migrated": 0,
+        "episodes_vec_migrated": 0,
+        "episodes_timestamp_added": 0,
     }
     conn = connect(db_path)
     client = OllamaClient()
     try:
+        # 0.7.9 復旧 migrate (後続 migrate が新命名を期待するため最先)
+        vec_mig = _migrate_legacy_vec_tables(conn)
+        if vec_mig["facts_vec_migrated"]:
+            counts["facts_vec_migrated"] = vec_mig["facts_vec_migrated"]
+            print(
+                f"  migrated facts_vec → fact_embeddings "
+                f"({vec_mig['facts_vec_migrated']} rows)"
+            )
+        if vec_mig["episodes_vec_migrated"]:
+            counts["episodes_vec_migrated"] = vec_mig["episodes_vec_migrated"]
+            print(
+                f"  migrated episodes_vec → episode_embeddings "
+                f"({vec_mig['episodes_vec_migrated']} rows)"
+            )
+        if _migrate_episodes_timestamp_column(conn):
+            counts["episodes_timestamp_added"] = 1
+            print("  added episodes.timestamp column (copied from created_at)")
         if _migrate_facts_check_constraint(conn):
             counts["facts_check_migrated"] = 1
             print("  migrated facts CHECK constraint (added 'knowledge' category)")
