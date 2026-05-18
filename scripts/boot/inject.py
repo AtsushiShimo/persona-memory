@@ -1,12 +1,10 @@
-"""boot 層 (persona / rule) facts の取得 + 整形 + dirty フラグ管理.
+"""boot 層 facts の取得 + 整形 + dirty フラグ管理 (0.8.0 — Cozo 単独経路).
 
-仕様書 §8 (2 層構造) / §8.1 (即時反映) / §8.2 (容量管理).
+format_boot_facts は Cozo / SQLite 共通の表示ロジックなので残置.
+BOOT_CATEGORIES / DIRTY_META_KEY 定数も他モジュール (= fact_persist) から
+参照されるため維持. SQLite 直接呼び出しは全削除.
 """
 from __future__ import annotations
-
-import sqlite3
-
-from scripts.db.repo import get_meta, set_meta
 
 BOOT_CATEGORIES = ("persona", "rule")
 DIRTY_META_KEY = "boot_layer_dirty"
@@ -14,30 +12,6 @@ DIRTY_META_KEY = "boot_layer_dirty"
 # §8.2 condense 提唱閾値 (暫定)
 CONDENSE_FACTS_THRESHOLD = 50
 CONDENSE_TOKENS_THRESHOLD = 5000
-
-
-def fetch_boot_facts(conn: sqlite3.Connection) -> list[dict]:
-    """SessionStart 注入対象の boot 層 facts.
-
-    `key` が `playbook_` prefix のものは **除外** する.
-    playbook (= 状況依存ノウハウ) は category=persona に保存されるが、
-    常時 context に乗せると肥大化するため、 dynamic recall で発話関連時のみ
-    main agent に注入する設計 (= ベクター検索で「stitch 動かない」 ↔
-    「外部ツール接続失敗時の対応」 が hit する想定).
-    """
-    rows = conn.execute(
-        """
-        SELECT category, key, value, importance
-        FROM facts
-        WHERE category IN ('persona','rule') AND status='active'
-          AND key NOT LIKE 'playbook_%'
-        ORDER BY importance DESC, id ASC
-        """,
-    ).fetchall()
-    return [
-        {"category": r[0], "key": r[1], "value": r[2], "importance": r[3]}
-        for r in rows
-    ]
 
 
 def format_boot_facts(facts: list[dict]) -> str:
@@ -50,14 +24,18 @@ def format_boot_facts(facts: list[dict]) -> str:
 
 
 def estimate_tokens(facts: list[dict]) -> int:
-    """ざっくり token 数。日本語混在なので char/2 を上限近似として使う。"""
-    total_chars = sum(len(f["value"]) + len(f["key"]) + len(f["category"]) + 8 for f in facts)
-    return total_chars // 2
+    """ざっくり token 数 (char/2 を上限近似)."""
+    total = sum(
+        len(f["value"]) + len(f["key"]) + len(f["category"]) + 8
+        for f in facts
+    )
+    return total // 2
 
 
-def condense_warning_if_needed(conn: sqlite3.Connection) -> str:
-    """boot 層が閾値を超えていたら、警告文を返す。空文字 = 警告なし。"""
-    facts = fetch_boot_facts(conn)
+def condense_warning_if_needed_cozo(client) -> str:
+    """Cozo 版: boot 層が肥大化していたら警告文を返す."""
+    from scripts.db_cozo.fact_persist import fetch_boot_facts
+    facts = fetch_boot_facts(client)
     n = len(facts)
     tokens = estimate_tokens(facts)
     if n > CONDENSE_FACTS_THRESHOLD or tokens > CONDENSE_TOKENS_THRESHOLD:
@@ -67,18 +45,3 @@ def condense_warning_if_needed(conn: sqlite3.Connection) -> str:
             f"   `/persona-memory:condense` で要約統合を検討してください。\n"
         )
     return ""
-
-
-# ── dirty フラグ ─────────────────────────────────────────────────────────────
-
-def mark_dirty(conn: sqlite3.Connection) -> None:
-    """write 側が boot 層を更新したら呼ぶ。"""
-    set_meta(conn, DIRTY_META_KEY, "1")
-
-
-def is_dirty(conn: sqlite3.Connection) -> bool:
-    return get_meta(conn, DIRTY_META_KEY) == "1"
-
-
-def clear_dirty(conn: sqlite3.Connection) -> None:
-    set_meta(conn, DIRTY_META_KEY, "0")

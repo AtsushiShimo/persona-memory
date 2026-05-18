@@ -9,11 +9,9 @@ generic RRF をパーソナライズで超える).
 """
 from __future__ import annotations
 
-import json
+import json  # noqa: F401  (legacy)
 import os
-import sqlite3
-
-from scripts.shared.embedding import pack
+import sqlite3  # noqa: F401  (legacy dead-code, 0.8.0 で dead)
 
 # trigger 検索の上限 (近い順)
 TRIGGER_TOP_K = int(os.environ.get("PERSONA_RECALL_TRIGGER_TOP_K", "10"))

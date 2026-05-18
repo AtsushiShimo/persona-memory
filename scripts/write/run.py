@@ -1,128 +1,48 @@
-"""write 主エントリ。detached child で起動され、新規 episode を fact 化する。
+"""write LLM 主エントリ (0.8.0 — Cozo 単独経路).
+
+detached child として起動され、 新規 episode を fact + 議論ノードに変換する.
 
 フロー:
-1. stdin から JSON 受信: {"episode_ids": [42, 43], "buffer_n": 3}
+1. stdin から JSON 受信: {"episode_ids": [42, 43], "buffer_n": 10}
 2. 各 episode について:
-   a. 直前 BUFFER_N 発話を episodes から取得
-   b. write LLM で fact 抽出
-   c. 各 candidate について:
-      - 候補 value を embedding 化
-      - find_match (key → embedding) で既存検索
-      - apply_candidate (補強 / 変更 / 挿入)
+   a. 直前 BUFFER_N 発話を episode から取得 (同一 session に絞る)
+   b. write LLM で fact candidates + 議論ノード候補を抽出
+   c. 各 candidate を embedding → Cozo find_match → apply_candidate
+   d. 議論ノード/エッジを Cozo に保存 (graph_extract 経由)
+   e. episode に embedding 付与
+3. 触れた fact_id を lint spawn に渡す (tail で近傍矛盾検査)
 """
 from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import sys
 from typing import Iterable
 
-from scripts.db.connection import connect
-from scripts.db.repo import get_meta, set_meta
-from scripts.escalate.claude_p import invoke_claude, log_escalation
-from scripts.escalate.decide import estimate_tokens, should_escalate
-from scripts.shared.embedding import pack
+from scripts.db_cozo.connection import init_db
+from scripts.db_cozo.fact_persist import apply_candidate, find_match
+from scripts.db_cozo.repo import fetch_buffer, fetch_episode
+from scripts.db_cozo.wire import (
+    cozo_db_path_for, cozo_db_present, maybe_cozo_extract_graph,
+)
+from scripts.escalate.claude_p import invoke_claude
+from scripts.escalate.decide import should_escalate
 from scripts.shared.env import get_db_path
 from scripts.shared.ollama import LLMClient, OllamaClient
 from scripts.write.extract import (
-    FactCandidate,
-    WRITE_MODEL,
-    build_prompt,
-    extract_facts,
+    FactCandidate, WRITE_MODEL, build_prompt, extract_facts_and_nodes,
     parse_response,
 )
-from scripts.write.persist import apply_candidate
-from scripts.write.similarity import find_match
-
-# Phase 5 (0.7.4): Cozo 並列保存 — SQLite に書く直後に同じ candidate を
-# Cozo にも apply して、 Cozo を将来の単独 source of truth にする準備.
-# Cozo DB 不在 (= 旧バージョン install で upgrade-cozo 未実行) の場合は
-# skip して SQLite のみ走らせる.
-try:
-    from scripts.db_cozo.connection import init_db as _cozo_init_db
-    from scripts.db_cozo.fact_persist import (
-        apply_candidate as _cozo_apply_candidate,
-        find_match as _cozo_find_match,
-    )
-    from scripts.db_cozo.wire import cozo_db_path_for, cozo_db_present
-    _COZO_AVAILABLE = True
-except ImportError:
-    _COZO_AVAILABLE = False
 
 EMBED_MODEL = os.environ.get("PERSONA_EMBED_MODEL", "nomic-embed-text")
-# write 側のバッファは広めに取る (= 多ターンに渡る議論で確定した決定を、
-# その確定ターンで即時 fact 化するため)。recall 側の BUFFER_N=3 とは独立。
-DEFAULT_BUFFER_N = int(os.environ.get("PERSONA_WRITE_BUFFER_N",
-                                       os.environ.get("PERSONA_BUFFER_N", "10")))
-PROCESSED_META_KEY = "write_processed_max_id"
-
-
-def get_processed_max_id(conn: sqlite3.Connection) -> int:
-    raw = get_meta(conn, PROCESSED_META_KEY)
-    try:
-        return int(raw) if raw is not None else 0
-    except ValueError:
-        return 0
-
-
-def mark_processed(conn: sqlite3.Connection, episode_id: int) -> None:
-    cur = get_processed_max_id(conn)
-    if episode_id > cur:
-        set_meta(conn, PROCESSED_META_KEY, str(episode_id))
-
-
-def fetch_unprocessed_episode_ids(conn: sqlite3.Connection) -> list[int]:
-    """write_processed_max_id 以降の episode id を昇順で返す。"""
-    cur = get_processed_max_id(conn)
-    rows = conn.execute(
-        "SELECT id FROM episodes WHERE id > ? ORDER BY id",
-        (cur,),
-    ).fetchall()
-    return [r[0] for r in rows]
-
-
-def fetch_episode(conn: sqlite3.Connection, episode_id: int) -> dict | None:
-    row = conn.execute(
-        "SELECT id, role, content, session_id, topic_id FROM episodes WHERE id = ?",
-        (episode_id,),
-    ).fetchone()
-    if not row:
-        return None
-    return {
-        "id": row[0], "role": row[1], "content": row[2],
-        "session_id": row[3], "topic_id": row[4],
-    }
-
-
-def fetch_buffer(
-    conn: sqlite3.Connection, before_id: int, n: int,
-    session_id: str | None = None,
-) -> list[dict]:
-    """直前 N 発話を取得. session_id 指定時は同一 session に絞る.
-
-    同一 persona の同一 DB に対し複数の Claude Code session が並行で書き込む
-    ケースで、 別 session の発話が buffer に混入して write LLM が誤った文脈で
-    fact 抽出するのを防ぐため (0.6.11).
-    """
-    if session_id is not None:
-        rows = conn.execute(
-            "SELECT role, content FROM episodes "
-            "WHERE id < ? AND session_id = ? "
-            "ORDER BY id DESC LIMIT ?",
-            (before_id, session_id, n),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT role, content FROM episodes WHERE id < ? ORDER BY id DESC LIMIT ?",
-            (before_id, n),
-        ).fetchall()
-    # 古い順に並び替え
-    return [{"role": r[0], "content": r[1]} for r in reversed(rows)]
+DEFAULT_BUFFER_N = int(
+    os.environ.get("PERSONA_WRITE_BUFFER_N",
+                   os.environ.get("PERSONA_BUFFER_N", "10"))
+)
 
 
 def _extract_via_claude(role: str, content: str, buffer: list[dict]) -> list[FactCandidate]:
-    """長文時は Claude に抽出を任せる (§3.1 long_input エスカレーション)."""
+    """長文時は Claude に抽出を任せる (escalation)."""
     prompt = build_prompt(role, content, buffer)
     r = invoke_claude(prompt)
     if not r.success:
@@ -130,95 +50,78 @@ def _extract_via_claude(role: str, content: str, buffer: list[dict]) -> list[Fac
     return parse_response(r.text)
 
 
-def _compute_episode_embedding(
-    episode_id: int,
-    content: str,
-    client: LLMClient,
-    embed_model: str,
-) -> list[float] | None:
-    """episode 全文の embedding を計算 (DB には触らない).
-
-    LLM 呼び出しのみ。失敗時は None。書き込みは _persist_episode_embedding で.
-    """
-    if not content or not content.strip():
-        return None
-    try:
-        vec = client.embed(embed_model, content)
-        if not vec:
-            return None
-        return vec
-    except Exception as e:
-        sys.stderr.write(f"[persona-memory] episode embedding failed (id={episode_id}): {e}\n")
-        return None
-
-
 def _persist_episode_embedding(
-    conn: sqlite3.Connection, episode_id: int, vec: list[float],
+    client, episode_id: int, vec: list[float],
 ) -> None:
-    """事前計算した embedding を episode_embeddings に書き込む (短時間)."""
-    try:
-        conn.execute(
-            "INSERT OR REPLACE INTO episode_embeddings(episode_id, embedding) VALUES (?, ?)",
-            (episode_id, pack(vec)),
-        )
-        conn.commit()
-    except Exception as e:
-        sys.stderr.write(f"[persona-memory] episode embedding write failed (id={episode_id}): {e}\n")
+    """episode の embedding 列を更新 (= 旧 episode_embeddings table 廃止)."""
+    if not vec:
+        return
+    row = client.run(
+        "?[role, content, summary, session_id, topic_id, ts] := "
+        "*episode{id: $id, role, content, summary, session_id, topic_id, "
+        "timestamp: ts} :limit 1",
+        {"id": episode_id},
+    ).get("rows", [])
+    if not row:
+        return
+    r = row[0]
+    client.run(
+        "?[id, role, content, summary, session_id, topic_id, timestamp, embedding] <- "
+        "[[$id, $r, $c, $s, $sid, $tid, $ts, $emb]] "
+        ":put episode {id => role, content, summary, session_id, "
+        "topic_id, timestamp, embedding}",
+        {"id": episode_id, "r": r[0], "c": r[1], "s": r[2],
+         "sid": r[3], "tid": r[4], "ts": r[5], "emb": vec},
+    )
 
 
 def process_episode(
-    conn: sqlite3.Connection,
+    client,
     episode_id: int,
     buffer_n: int,
-    client: LLMClient,
+    llm: LLMClient,
     write_model: str = WRITE_MODEL,
     embed_model: str = EMBED_MODEL,
 ) -> list[tuple[FactCandidate, str]]:
-    """1 episode を処理し、(candidate, action) のリストを返す。
-
-    副作用: 当該 episode の content を embedding 化して episode_embeddings に格納
-    (recall 時のベクトル検索の対象になる)。
-    """
-    # ------- Phase A: read (短時間 conn 使用) -------
-    episode = fetch_episode(conn, episode_id)
+    """1 episode を処理し (candidate, action) のリストを返す."""
+    episode = fetch_episode(client, episode_id)
     if not episode:
         return []
-    # 0.6.11: 同一 session に絞る (並行 session 間の混線防止).
-    buffer = fetch_buffer(conn, episode_id, buffer_n, session_id=episode.get("session_id"))
-
-    # ------- Phase B: LLM 呼び出し (DB に touch しない) -------
-    # 0.6.10 で transaction 短縮: episode embed / extract / candidate embed を全て
-    # この phase で一括計算し、後続の Phase C で短時間に DB write する。LLM 呼び出し
-    # 中に conn を経由した execute() を呼ばないことで、他プロセス (assistant 発話の
-    # save_episode 等) が write transaction を取れる窓を確保する.
-
-    # episode 全文 embedding (DB write は Phase C)
-    episode_emb = _compute_episode_embedding(
-        episode_id, episode["content"], client, embed_model,
+    buffer = fetch_buffer(
+        client, episode_id, buffer_n,
+        session_id=episode.get("session_id"),
     )
 
-    # 入力サイズで long_input エスカレーション判定 + extract LLM
-    full_input = episode["content"] + "\n" + "\n".join(b.get("content", "") for b in buffer)
+    # episode 全文 embedding
+    episode_emb = None
+    if episode["content"] and episode["content"].strip():
+        try:
+            episode_emb = llm.embed(embed_model, episode["content"])
+        except Exception as e:
+            sys.stderr.write(
+                f"[persona-memory] episode embedding failed (id={episode_id}): {e}\n",
+            )
+
+    # long_input escalation + write LLM 抽出
+    full_input = episode["content"] + "\n" + "\n".join(
+        b.get("content", "") for b in buffer
+    )
     reason = should_escalate(input_text=full_input)
-    node_candidates: list = []  # 0.6.17 議論ノード候補
+    node_candidates: list = []
     if reason == "long_input":
-        candidates = _extract_via_claude(episode["role"], episode["content"], buffer)
+        candidates = _extract_via_claude(
+            episode["role"], episode["content"], buffer,
+        )
     else:
-        from scripts.write.extract import extract_facts_and_nodes
         candidates, node_candidates = extract_facts_and_nodes(
             role=episode["role"],
             content=episode["content"],
             buffer=buffer,
-            client=client,
+            client=llm,
             model=write_model,
         )
 
-    # write LLM が指示違反で同じ (category, key) で複数 candidate を出した時の
-    # セーフティネット: 2 件目以降に `_2`, `_3` の suffix を付けて情報損失を防ぐ.
-    # apply_candidate 側で互いに supersede し合って 1 件しか残らない事象 (例:
-    # 「まろん、ミニチュアダックスフンド、オス」 を全部 pet_dog_name で出して
-    # 最後の「オス」 だけ active になる) を回避する. prompt で禁止しているが
-    # heavy LLM でも守れない事例があるため運用側で保険をかける.
+    # seen_keys safety net
     seen_keys: dict[tuple[str, str], int] = {}
     for cand in candidates:
         kid = (cand.category, cand.key)
@@ -228,96 +131,34 @@ def process_episode(
             new_key = f"{cand.key}_{cnt + 1}"
             sys.stderr.write(
                 f"[persona-memory] write LLM duplicate (cat={cand.category}, "
-                f"key={cand.key}) in batch — renamed to '{new_key}' "
-                f"(value snippet: {cand.value[:30]!r})\n"
+                f"key={cand.key}) in batch — renamed to '{new_key}'\n",
             )
             cand.key = new_key
 
-    # 0.6.24 トピック記憶: tag 抽出 (light LLM 別コール).
-    # PERSONA_TOPIC_DISABLE / PERSONA_TAG_EXTRACT_DISABLE で bypass.
-    extracted_tags: list[str] = []
-    if (
-        episode.get("topic_id")
-        and os.environ.get("PERSONA_TOPIC_DISABLE", "").strip() != "1"
-        and os.environ.get("PERSONA_TAG_EXTRACT_DISABLE", "").strip() != "1"
-    ):
-        try:
-            from scripts.topic.tag_extract import extract_tags
-            extracted_tags = extract_tags(
-                episode["role"], episode["content"], buffer, client,
-            )
-        except Exception as e:
-            sys.stderr.write(f"[persona-memory] tag extraction failed: {e}\n")
-            extracted_tags = []
-
-    # 各 candidate の embedding を pre-compute (DB write は Phase C)
-    # value 単独ではなく `<category>/<key>: <value>` を embed する。
-    # nomic-embed-text は短い・OOV-like な入力 (例: 「糖尿病」「MVP」「猫」) を
-    # 同じ default embedding に collapse させるため、value 単独だと無関係な
-    # fact 同士が cosine 距離 0 で衝突する。category/key を前置して長く・diverse
-    # なテキストにすることで衝突確率を大幅に下げる (boot 層は upgrade.py で
-    # 既にこのフォーマット)。
+    # candidate embeddings (= <cat>/<key>: <value>)
     cand_embeds: list[list[float]] = []
     for cand in candidates:
-        embed_text = f"{cand.category}/{cand.key}: {cand.value}"
+        text = f"{cand.category}/{cand.key}: {cand.value}"
         try:
-            embedding = client.embed(embed_model, embed_text)
+            cand_embeds.append(llm.embed(embed_model, text))
         except Exception:
-            embedding = []
-        cand_embeds.append(embedding)
+            cand_embeds.append([])
 
-    # ------- Phase C: DB write (短時間 conn 使用、LLM 呼び出しなし) -------
+    # episode embedding 書き込み
     if episode_emb is not None:
-        _persist_episode_embedding(conn, episode_id, episode_emb)
-
-    if reason == "long_input":
-        log_escalation(
-            conn, reason="long_input", caller="write",
-            input_size=estimate_tokens(full_input),
-            outcome=f"extracted {len(candidates)} facts",
-        )
-
-    # 0.6.17 案 1 Phase A2: 議論ノードを discussion_nodes へ保存.
-    # LLM 抽出失敗時 / 通常発話では node_candidates=[] でスキップ.
-    # 0.6.18 Phase B: ノードに embedding を付けて recall の近傍検索に乗せる.
-    if node_candidates:
         try:
-            from scripts.discussion.graph import add_node
-            from scripts.shared.embedding import pack, truncate_for_embedding
-            for nc in node_candidates:
-                embed_text = nc.title
-                if nc.content:
-                    embed_text = f"{nc.title}\n{nc.content}"
-                embed_text = truncate_for_embedding(embed_text)
-                node_emb_blob: bytes | None = None
-                try:
-                    vec = client.embed(embed_model, embed_text)
-                    if vec:
-                        node_emb_blob = pack(vec)
-                except Exception:
-                    node_emb_blob = None
-                add_node(
-                    conn,
-                    kind=nc.kind,
-                    title=nc.title,
-                    state=nc.state,
-                    content=nc.content,
-                    episode_id=episode_id,
-                    embedding=node_emb_blob,
-                )
+            _persist_episode_embedding(client, episode_id, episode_emb)
         except Exception as e:
-            sys.stderr.write(f"[persona-memory] add_node failed: {e}\n")
+            sys.stderr.write(
+                f"[persona-memory] episode embed persist failed (id={episode_id}): {e}\n",
+            )
 
-    # 0.7.6 Cozo リアルタイム議論グラフ生成.
-    # 旧 SQLite 経路 (上の add_node) と独立に Cozo の discussion_node /
-    # discussion_edge を育てる. backfill 不要の状態を作るのが目的.
-    # 抽出器は db_cozo.graph_extract.extract_node_with_relation (prev_relation + target).
+    # 0.7.6 Cozo リアルタイム議論グラフ (= wire.maybe_cozo_extract_graph)
     try:
-        sqlite_db_path = get_db_path()
-        if sqlite_db_path is not None:
-            from scripts.db_cozo.wire import maybe_cozo_extract_graph
+        sqlite_db = get_db_path()
+        if sqlite_db is not None:
             maybe_cozo_extract_graph(
-                sqlite_db_path,
+                sqlite_db,
                 role=episode["role"],
                 content=episode["content"],
                 session_id=episode["session_id"],
@@ -325,99 +166,68 @@ def process_episode(
                 episode_id=episode_id,
             )
     except Exception as e:
-        sys.stderr.write(f"[persona-memory] cozo extract_graph dispatch failed: {e}\n")
-
-    # 0.6.24 トピック記憶: 抽出した tag を topic_tags + topic_tag_embeddings へ.
-    if extracted_tags and episode.get("topic_id"):
-        try:
-            from scripts.topic.persist import save_tags
-            save_tags(conn, episode["topic_id"], extracted_tags, client, embed_model)
-        except Exception as e:
-            sys.stderr.write(f"[persona-memory] save_tags failed: {e}\n")
+        sys.stderr.write(
+            f"[persona-memory] cozo extract_graph failed: {e}\n",
+        )
 
     if not candidates:
         return []
 
-    # Cozo 並列 apply のため client を 1 度だけ初期化 (= per-episode 1 connection).
-    cozo_client = None
-    if _COZO_AVAILABLE:
-        try:
-            db_path = get_db_path()
-            if db_path is not None and cozo_db_present(db_path):
-                cozo_client = _cozo_init_db(cozo_db_path_for(db_path))
-        except Exception as e:
-            sys.stderr.write(f"[persona-memory] cozo init failed: {e}\n")
-            cozo_client = None
-
+    # fact apply (Cozo)
     results: list[tuple[FactCandidate, str]] = []
-    for cand, embedding in zip(candidates, cand_embeds):
-        match = find_match(conn, cand.category, cand.key, embedding)
-
-        # importance >= 8 で既存と矛盾 (supersede 候補) なら裁定をログだけ残す。
-        # phase 6 では Claude に裁定させずローカル判定に任せる (= heuristic 採用)。
-        # uncertainty 判定の精緻化は post-MVP。
-        if cand.importance >= 8 and match is not None:
-            log_escalation(
-                conn, reason="high_importance", caller="write",
-                input_size=estimate_tokens(cand.value),
-                outcome=f"local-decided overwrite of {match.category}/{match.key}",
+    for cand, emb in zip(candidates, cand_embeds):
+        try:
+            match = find_match(client, cand.category, cand.key, emb)
+            action = apply_candidate(
+                client, cand, match, emb,
+                source="conversation", reason=cand.reason,
             )
-
-        action = apply_candidate(
-            conn, cand, match, embedding, source="conversation", reason=cand.reason,
-        )
-        # Phase 5: Cozo にも同じ candidate を独立に apply (id 採番は独立).
-        if cozo_client is not None:
-            try:
-                cmatch = _cozo_find_match(
-                    cozo_client, cand.category, cand.key, embedding,
-                )
-                _cozo_apply_candidate(
-                    cozo_client, cand, cmatch, embedding,
-                    source="conversation", reason=cand.reason,
-                )
-            except Exception as e:
-                sys.stderr.write(
-                    f"[persona-memory] cozo apply_candidate failed: {e}\n",
-                )
-        results.append((cand, action))
+            results.append((cand, action))
+        except Exception as e:
+            sys.stderr.write(
+                f"[persona-memory] cozo apply_candidate failed: {e}\n",
+            )
     return results
 
 
-def run(episode_ids: Iterable[int], buffer_n: int = DEFAULT_BUFFER_N, client: LLMClient | None = None) -> int:
-    db_path = get_db_path()
-    if db_path is None:
+def run(
+    episode_ids: Iterable[int],
+    buffer_n: int = DEFAULT_BUFFER_N,
+    llm: LLMClient | None = None,
+) -> int:
+    sqlite_db = get_db_path()
+    if sqlite_db is None:
         return 0
-    cli = client or OllamaClient()
+    if not cozo_db_present(sqlite_db):
+        sys.stderr.write(
+            "[persona-memory] Cozo DB が見つかりません (write). "
+            "/persona-memory:upgrade を実行してください.\n",
+        )
+        return 0
+    cozo_path = cozo_db_path_for(sqlite_db)
+    cli = llm or OllamaClient()
     touched_fact_ids: list[int] = []
-    # episode 単位で conn を開閉する。process_episode 内では LLM 呼び出し
-    # (10-30s) を含むため、長時間 1 つの conn を保持すると Stop hook 等の
-    # 並行 writer (assistant 発話の save_episode) が DB lock で落ちる。
-    # episode 境界で commit + close することで、他の writer が割り込める
-    # ウィンドウを定期的に作る。
+
     for eid in episode_ids:
-        conn = connect(db_path)
         try:
-            results = process_episode(conn, eid, buffer_n, cli)
-            # insert / supersede された fact の id を拾って後で lint tail に渡す.
-            # reinforce / protected は内容が大きく動かないため lint 対象外.
+            client = init_db(cozo_path)
+            results = process_episode(client, eid, buffer_n, cli)
             for cand, action in results:
                 if action not in ("insert", "supersede"):
                     continue
-                row = conn.execute(
-                    "SELECT id FROM facts WHERE category=? AND key=? AND status='active'",
-                    (cand.category, cand.key),
-                ).fetchone()
+                # 触れた fact の id を Cozo から再取得
+                row = client.run(
+                    "?[id] := *fact{id, category, key, status: 'active'}, "
+                    "category = $c, key = $k :limit 1",
+                    {"c": cand.category, "k": cand.key},
+                ).get("rows", [])
                 if row:
-                    touched_fact_ids.append(row[0])
-            mark_processed(conn, eid)
+                    touched_fact_ids.append(row[0][0])
         except Exception as e:
-            sys.stderr.write(f"[persona-memory] write process_episode {eid} failed: {e}\n")
-            continue
-        finally:
-            conn.close()
-    # write 完了後 lint を tail spawn (= 新 fact の近傍に対して矛盾 judge).
-    # detached child なので write run はここで即座に return できる.
+            sys.stderr.write(
+                f"[persona-memory] write process_episode {eid} failed: {e}\n",
+            )
+
     if touched_fact_ids:
         try:
             from scripts.hooks.spawn import spawn_lint

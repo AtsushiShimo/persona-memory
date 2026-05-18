@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 import subprocess
 from dataclasses import dataclass
 
@@ -46,16 +45,10 @@ def invoke_claude(prompt: str, timeout: float = ESCALATION_TIMEOUT) -> Escalatio
         return EscalationResult(text="", success=False, error=str(e)[:200])
 
 
-def log_escalation(
-    conn: sqlite3.Connection,
-    reason: str,
-    caller: str,
-    input_size: int,
-    outcome: str,
-) -> None:
-    conn.execute(
-        "INSERT INTO escalation_log(reason, caller, input_size, outcome) "
-        "VALUES (?, ?, ?, ?)",
-        (reason, caller, input_size, outcome[:500]),
-    )
-    conn.commit()
+def log_escalation(*_args, **_kwargs) -> None:
+    """0.8.0 で SQLite 経路廃止に伴い no-op 化.
+
+    旧 escalation_log table は SQLite 専用で、 Cozo 移行先は未設計のため
+    現状ログ非保存. 必要なら後続で Cozo に escalation_log relation を新設.
+    """
+    return None

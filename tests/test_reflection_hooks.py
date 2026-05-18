@@ -23,27 +23,9 @@ def tmp_persona(tmp_path: Path, monkeypatch):
     sqlite_path = persona_dir / "test.db"
     cozo_path = persona_dir / "test.cozo.db"
 
-    # SQLite schema
-    import sqlite3
-    import sqlite_vec
-    repo_root = Path(__file__).resolve().parent.parent
-    schema_sql = (repo_root / "scripts" / "db" / "schema.sql").read_text()
-    conn = sqlite3.connect(sqlite_path)
-    conn.enable_load_extension(True)
-    sqlite_vec.load(conn)
-    conn.enable_load_extension(False)
-    conn.executescript(schema_sql)
-    conn.execute(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS facts_vec USING vec0("
-        "  fact_id  INTEGER PRIMARY KEY, embedding FLOAT[768])"
-    )
-    conn.execute(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS episodes_vec USING vec0("
-        "  episode_id INTEGER PRIMARY KEY, embedding FLOAT[768])"
-    )
-    conn.commit()
-    conn.close()
-    # Cozo schema
+    # 0.8.0: SQLite 経路は廃止. Cozo schema のみ. sqlite_path は touch のみで
+    # path 互換 (= get_db_path が見るファイル) として確保.
+    sqlite_path.touch()
     from scripts.db_cozo.connection import init_db as _cozo_init
     _cozo_init(cozo_path)
 

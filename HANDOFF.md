@@ -1194,4 +1194,94 @@ Claude Code が一度注意された実装上のミスを永遠に修正出来�
 
 ---
 
-最終更新: 2026-05-18 (version 0.7.9)
+---
+
+## 18. 0.8.0 — SQLite 経路を業務フローから完全削除 (2026-05-18)
+
+### 18.1 背景
+
+マスター指摘:「仕様 (Cozo メイン) と実装 (SQLite 書き側並走 + MCP server 直読)
+の乖離を『0.8.0 メジャーで完全廃止』 と先送りしていた結果、 業務フローに
+SQLite が居座り続けた. 思い出せない → デバッグ → lock 競合 → assistant 発話の
+取りこぼし、 の連鎖を生んだ」.
+
+= 「Phase 分割 / 並走期 / メジャー保留」 で乖離を許容することそのものが罠.
+0.8.0 で一気に Cozo 単独化.
+
+### 18.2 改修内容
+
+**Cozo only 化したモジュール**:
+- `server/db.py`: 全関数を Cozo backend wrapper に書き換え (= MCP server から
+  SQLite を完全に切る). 関数シグネチャは旧版互換のため `server/main.py` は無修正.
+- `scripts/hooks/on_user_prompt.py`: SQLite save_episode 削除 → Cozo direct.
+- `scripts/hooks/on_stop.py`: 同上. 個別 try/except で部分失敗許容.
+- `scripts/hooks/on_session_start.py`: Cozo boot fact fetch.
+- `scripts/hooks/on_session_end.py`: Cozo topic touch.
+- `scripts/hooks/spawn.py`: 旧 `spawn_topic_summary_backfill` (SQLite topic 経路) 削除.
+- `scripts/write/run.py`: Cozo の `fact_persist.apply_candidate` を直接呼ぶ.
+- `scripts/lint/run.py`: judge_conflict (LLM 部) のみ残し, DB 部は
+  `db_cozo/lint.lint_around_fact_cozo` に丸投げ.
+- `scripts/boot/inject.py`: SQLite 関数削除 → format / condense_warning_cozo のみ.
+- `scripts/seed_persona.py`: Cozo に直接 boot fact upsert.
+- `scripts/upgrade.py`: 940 行 → 220 行に短縮. 仕事は 3 つに絞る:
+  1. 旧 SQLite データの Cozo 救済 (= migrate_from_sqlite 自動実行)
+  2. Cozo boot fact refresh (DEFAULT_BOOT_FACTS idempotent upsert)
+  3. config.env の `${CLAUDE_PROJECT_DIR}` 相対パス化
+- `scripts/health.py`: Cozo 統計のみ. SQLite チェック削除.
+- `scripts/escalate/claude_p.py`: `log_escalation` を no-op 化 (= SQLite 依存削除).
+
+**物理削除**:
+- `scripts/db/` (connection / repo / migrate / schema.sql)
+- `scripts/auto_persist.py`, `scripts/add_stance.py`, `scripts/resume.py`,
+  `scripts/tools/recall_replay.py`
+
+**dead code 残置 (= 0.8.x で順次削除予定)**:
+- `scripts/recall/` の SQLite 関数群 (search / triggers の SQL 部分).
+  業務フローから到達不能 (= MCP も hook も Cozo only). 削除しない理由は
+  `db_cozo/recall_full.py` が `recall/extract.py` / `recall/search.py` /
+  `recall/summarize.py` の LLM ロジック関数を import しているため.
+  純粋関数の移動は別 commit で.
+- `scripts/discussion/` (graph の VALID_KINDS 定数 + SQLite backfill).
+  write/extract.py が VALID_KINDS を import.
+- `scripts/topic/` (search.py, persist.py 等).
+- `scripts/write/persist.py`, `scripts/write/similarity.py`.
+  fact_persist.py / lint.py が `_is_same_attribute` を使用.
+
+**テスト整理**:
+- 30+ ファイルの SQLite 依存テスト削除 (test_db_schema / test_recall / test_write
+  / test_lint / test_boot / test_topic_* / test_discussion_graph 等).
+- 新規 `tests/test_e2e_cozo_only_080.py` で全機能 Cozo 経路の e2e PASS 8/8.
+
+### 18.3 ユーザー側の影響
+
+- 既存ペルソナで `/persona-memory:upgrade` を実行すると、 SQLite データが
+  Cozo に自動移行される (Cozo が空の場合のみ. 既に Cozo 移行済ならスキップ).
+- SQLite ファイル (`<persona>.db`) は **読み専用バックアップとして物理残置**
+  (= 「忘れない」 原則). 業務フローからは触らない.
+- `PERSONA_COZO_DISABLE=1` 経路は 0.8.0 で **無効化** (= 業務フローが Cozo のみ
+  なので bypass しても何も動かない). env 変数自体は残るが効果なし.
+
+### 18.4 検証
+
+- 全テスト: **243 passed**, 3 既存 fail (test_db_cozo_backfill_graph) は 0.7.6 由来
+  で本変更と独立.
+- 自己テスト (`tests/test_e2e_cozo_only_080.py`): 全 8 件 PASS.
+  - MCP backend 全機能 (upsert_fact / search_facts / list_active_facts /
+    delete_fact / append_episode / search_episodes / get_persona_name).
+  - lesson カテゴリ + importance 10 が Cozo で通る (= SQLite CHECK 制約解消).
+  - lesson trigger 登録 + match の往復.
+  - debug mode flag の toggle.
+  - hook 経路の SQLite 不在動作 (subprocess).
+  - health check が Cozo 統計を返す.
+
+### 18.5 守るべきメタ原則 (= 新規 lesson `playbook_no_unjustified_phase_split`)
+
+AI には phased migration / 段階リリース / 並走期 / バックアップ残置 /
+メジャー保留 等の「分割そのもの」 を採用する意味が薄い. 分けるなら分割の前提と
+意図を具体的に説明できる状態にする. 説明できないなら分けない = 1 リリースで完遂.
+例外: (1) ユーザーデータの後方互換 migrate, (2) パーツ単位の動作確認
+(同 commit 内), (3) 物理的依存関係で順序が決まる場合.
+
+---
+
+最終更新: 2026-05-18 (version 0.8.0)

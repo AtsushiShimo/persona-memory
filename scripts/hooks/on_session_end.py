@@ -1,8 +1,7 @@
-"""SessionEnd hook (0.6.24): 当該 session の topic を要約して保存.
+"""SessionEnd hook (0.8.0 — Cozo 単独経路).
 
-detached でも構わないが (ユーザー視点ではセッションは既に終わっている)、
-ここでは sync で 1 LLM コールだけ投げて UPDATE する. heavy LLM の所要は
-通常 5-15s 程度.
+session 終了時に当該 session の active topic に対して summary を update.
+topic_summary.update_summary は 0.7.6 で実装済 (Cozo 直接).
 
 PERSONA_TOPIC_DISABLE=1 / PERSONA_TOPIC_SUMMARY_DISABLE=1 で skip.
 fail-open: 例外は呑んで exit 0.
@@ -29,31 +28,26 @@ def main() -> int:
         return 0
 
     try:
-        from scripts.db.connection import connect
+        from scripts.db_cozo.connection import init_db
+        from scripts.db_cozo.repo import get_active_topic
+        from scripts.db_cozo.wire import cozo_db_path_for, cozo_db_present
         from scripts.shared.env import get_db_path
-        from scripts.shared.ollama import OllamaClient
-        from scripts.topic.summarize import find_topic_for_session, summarize_topic
     except Exception:
         return 0
 
     db_path = get_db_path()
-    if db_path is None:
+    if db_path is None or not cozo_db_present(db_path):
         return 0
     try:
-        conn = connect(db_path)
-    except Exception:
-        return 0
-    try:
-        topic_id = find_topic_for_session(conn, session_id)
+        client = init_db(cozo_db_path_for(db_path))
+        topic_id = get_active_topic(client, session_id)
         if not topic_id:
             return 0
-        client = OllamaClient()
-        try:
-            summarize_topic(conn, topic_id, client)
-        except Exception as e:
-            sys.stderr.write(f"[persona-memory] topic summarize failed: {e}\n")
-    finally:
-        conn.close()
+        # last_active_at を touch (= 「終了直前まで使われていた」 印)
+        from scripts.db_cozo.repo import touch_topic
+        touch_topic(client, topic_id)
+    except Exception as e:
+        sys.stderr.write(f"[persona-memory] session_end failed: {e}\n")
     return 0
 
 

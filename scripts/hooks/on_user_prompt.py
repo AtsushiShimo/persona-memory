@@ -1,12 +1,15 @@
-"""UserPromptSubmit hook 同期処理 (phase 4 範囲).
+"""UserPromptSubmit hook 同期処理 (0.8.0 — Cozo 単独経路).
 
 実行内容:
 1. 機密チェック (検出時は raw 保存 / recall すべてスキップ、stderr 警告)
-2. user 発話を episodes に raw 保存 (zero-loss)
-3. recall: ローカル LLM がキーワード抽出 → DB 検索 → additionalContext 出力 ← phase 4 追加
-4. write LLM を detach 起動 (saved episode_id を渡す)
+2. 反省モード state 取得 + 怒気検知 (instruction 注入 + lesson 浮上)
+3. boot 層 dirty 再注入 (Cozo)
+4. user 発話を episode に raw 保存 (Cozo)
+5. topic 同定 (生きてる話題箱) + full recall (Cozo)
+6. additionalContext 出力
+7. write LLM を detach 起動 (Cozo episode_id を渡す)
 
-fail-open: recall / write どこで失敗しても raw 保存は守られ Claude Code 本体は進む。
+fail-open: recall / write どこで失敗しても raw 保存は守られ Claude Code 本体は進む.
 """
 from __future__ import annotations
 
@@ -14,8 +17,6 @@ import json
 import os
 import sys
 
-from scripts.db.connection import connect
-from scripts.db.repo import save_episode
 from scripts.hooks.spawn import spawn_write
 from scripts.secrets.detect import detect_secrets, warning_message
 from scripts.shared.env import get_db_path, get_session_id_from_payload
@@ -54,23 +55,29 @@ def main() -> int:
         return 0
 
     session_id = get_session_id_from_payload(payload)
-    additional_context = ""
 
-    # ── 反省モード state 取得 + 怒気検知 (0.7.7) ──
-    # Cozo に reflection_state relation を持つため、 Cozo 不在時は反省機能を
-    # 全 bypass (SQLite-only ペルソナ後方互換).
-    reflection_block = ""
-    lesson_prompt_block = ""
-    cozo_db_path_for_reflection = None
+    # Cozo path 解決 (.cozo.db 不在なら何もせず exit, init 未実行扱い).
+    from scripts.db_cozo.wire import cozo_db_path_for, cozo_db_present
+    if not cozo_db_present(db_path):
+        sys.stderr.write(
+            "[persona-memory] Cozo DB が見つかりません. "
+            "/persona-memory:init もしくは /persona-memory:upgrade を実行してください.\n"
+        )
+        return 0
+    cozo_path = cozo_db_path_for(db_path)
+
+    additional_context = ""
+    episode_id: int | None = None
+
     try:
-        from scripts.db_cozo.wire import cozo_db_path_for, cozo_db_present
-        if cozo_db_present(db_path):
-            cozo_db_path_for_reflection = cozo_db_path_for(db_path)
-    except Exception:
-        cozo_db_path_for_reflection = None
-    if cozo_db_path_for_reflection is not None:
+        from scripts.db_cozo.connection import init_db
+        from scripts.db_cozo.repo import save_episode
+        client = init_db(cozo_path)
+
+        # ── 反省モード state 取得 + 怒気検知 (0.7.7) ──
+        reflection_block = ""
+        lesson_prompt_block = ""
         try:
-            from scripts.db_cozo.connection import init_db as _r_init
             from scripts.reflection.detect import detect_anger
             from scripts.reflection.instruction import (
                 format_continue_instruction, format_enter_instruction,
@@ -83,27 +90,19 @@ def main() -> int:
                 get_state as _r_get, increment_turn as _r_inc,
                 should_force_clear as _r_force,
             )
-            _rcli = _r_init(cozo_db_path_for_reflection)
-            rstate = _r_get(_rcli)
-
+            rstate = _r_get(client)
             angry, phrase = detect_anger(prompt, OllamaClient())
             if angry:
-                # 反省モード突入 (or 継続) + instruction 注入
-                # episode_id はまだ採番していないので暫定 0. 後で書き換えはしない
-                # (= state の trigger_episode_id は主に統計目的).
-                _r_enter(_rcli, episode_id=0, anger_phrase=phrase)
+                _r_enter(client, episode_id=0, anger_phrase=phrase)
                 reflection_block = format_enter_instruction(phrase)
             elif rstate.active:
-                # 怒気なし + モード中 → 継続 instruction 注入 + ターン加算
-                turn = _r_inc(_rcli)
-                if _r_force(_rcli):
-                    _r_clear(_rcli)
+                turn = _r_inc(client)
+                if _r_force(client):
+                    _r_clear(client)
                 else:
                     reflection_block = format_continue_instruction(turn)
-
-            # lesson マッチ (発話意図) → 通常 recall に追加して上位提示
             try:
-                lesson_matches = match_lessons_for_prompt(_rcli, prompt)
+                lesson_matches = match_lessons_for_prompt(client, prompt)
                 lesson_prompt_block = format_lesson_block_for_prompt(
                     lesson_matches,
                 )
@@ -115,96 +114,63 @@ def main() -> int:
             sys.stderr.write(
                 f"[persona-memory] reflection wire failed: {e}\n",
             )
-    try:
-        conn = connect(db_path)
+
+        # ── boot 層 dirty 再注入 (Cozo) ──
+        boot_section = ""
         try:
-            episode_id = save_episode(conn, role="user", content=prompt, session_id=session_id)
-
-            # ── boot 層 dirty 再注入 (§8.1) ──
-            # Phase 5 (0.7.4): Cozo に fact があれば Cozo dirty を優先.
-            # Cozo が空 (= upgrade-cozo 直後で write が未稼働) なら SQLite fallback.
-            from scripts.boot.inject import (
-                clear_dirty, fetch_boot_facts, format_boot_facts, is_dirty,
+            from scripts.boot.inject import format_boot_facts
+            from scripts.db_cozo.fact_persist import (
+                clear_boot_dirty, fetch_boot_facts, is_boot_dirty,
             )
-            from scripts.db_cozo.wire import (
-                cozo_db_present, cozo_db_path_for, maybe_cozo_full_recall,
-                maybe_cozo_identify_topic, maybe_cozo_save_episode,
-            )
-            cozo_active = cozo_db_present(db_path)
-            boot_section = ""
-            cozo_boot_used = False
-            if cozo_active:
-                try:
-                    from scripts.db_cozo.connection import init_db as _cozo_init_db
-                    from scripts.db_cozo.fact_persist import (
-                        clear_boot_dirty as _cozo_clear_boot_dirty,
-                        fetch_boot_facts as _cozo_fetch_boot_facts,
-                        is_boot_dirty as _cozo_is_boot_dirty,
-                    )
-                    _cclient = _cozo_init_db(cozo_db_path_for(db_path))
-                    if _cozo_is_boot_dirty(_cclient):
-                        cfacts = _cozo_fetch_boot_facts(_cclient)
-                        if cfacts:
-                            boot_section = format_boot_facts(cfacts)
-                            _cozo_clear_boot_dirty(_cclient)
-                            cozo_boot_used = True
-                except Exception as e:
-                    sys.stderr.write(f"[persona-memory] cozo boot failed: {e}\n")
-            if not cozo_boot_used and is_dirty(conn):
-                boot_section = format_boot_facts(fetch_boot_facts(conn))
-                clear_dirty(conn)
+            if is_boot_dirty(client):
+                facts = fetch_boot_facts(client)
+                if facts:
+                    boot_section = format_boot_facts(facts)
+                    clear_boot_dirty(client)
+        except Exception as e:
+            sys.stderr.write(f"[persona-memory] boot inject failed: {e}\n")
 
-            # ── Cozo 経路 (.cozo.db 存在時 → メイン recall として使う) ──
-            cozo_section = ""
-            try:
-                # 0.7.6: 「生きてる話題箱」 方式で topic を同定 → active topic 切替.
-                # 旧 maybe_cozo_topic_shift (active topic との 1 対 1 比較 +
-                # cross-session merge) を完全に包摂. embedding で並列照合し、
-                # 該当があれば summary を更新、 無ければ新 topic を作成.
-                if cozo_active:
-                    maybe_cozo_identify_topic(
-                        db_path, session_id, prompt, role="user",
-                    )
-                # Cozo 側にも raw 保存 (新規発話を Cozo にも流す).
-                # write LLM は当面 SQLite なので両方保存. 将来は Cozo 単独化予定.
-                maybe_cozo_save_episode(
-                    db_path, role="user", content=prompt, session_id=session_id,
+        # ── topic 同定 (= 生きてる話題箱) ──
+        try:
+            if os.environ.get("PERSONA_TOPIC_DISABLE", "").strip() != "1":
+                from scripts.db_cozo.wire import maybe_cozo_identify_topic
+                maybe_cozo_identify_topic(
+                    db_path, session_id, prompt, role="user",
                 )
-                if cozo_active:
-                    cozo_section = maybe_cozo_full_recall(db_path, prompt)
-            except Exception as e:
-                sys.stderr.write(f"[persona-memory] cozo wire failed: {e}\n")
+        except Exception as e:
+            sys.stderr.write(f"[persona-memory] topic identify failed: {e}\n")
 
-            # ── SQLite recall: Cozo 未移行 (.cozo.db 不在) の時のみ実行 ──
-            recall_section = ""
-            if not cozo_active and os.environ.get("PERSONA_RECALL_DISABLE") != "1":
-                try:
-                    from scripts.recall.run import recall
-                    recall_section = recall(
-                        conn, prompt, OllamaClient(),
-                        session_id=session_id,
-                        source_episode_id=episode_id,
-                    )
-                except Exception as e:
-                    sys.stderr.write(f"[persona-memory] recall failed: {e}\n")
-
-            # 反省モード instruction と lesson ブロックは **最上位** に置く.
-            # cozo_section / boot_section / recall_section より優先表示することで
-            # main agent が確実に従う.
-            additional_context = "\n\n".join(
-                s for s in (
-                    reflection_block, lesson_prompt_block,
-                    cozo_section, boot_section, recall_section,
-                ) if s
+        # ── user 発話を episode に raw 保存 ──
+        try:
+            episode_id = save_episode(
+                client, role="user", content=prompt, session_id=session_id,
             )
-        finally:
-            conn.close()
+        except Exception as e:
+            sys.stderr.write(f"[persona-memory] save_episode failed: {e}\n")
+
+        # ── full recall ──
+        cozo_section = ""
+        try:
+            if os.environ.get("PERSONA_RECALL_DISABLE", "").strip() != "1":
+                from scripts.db_cozo.wire import maybe_cozo_full_recall
+                cozo_section = maybe_cozo_full_recall(db_path, prompt)
+        except Exception as e:
+            sys.stderr.write(f"[persona-memory] full recall failed: {e}\n")
+
+        # 反省モード / lesson ブロックを最上位に置く.
+        additional_context = "\n\n".join(
+            s for s in (
+                reflection_block, lesson_prompt_block,
+                cozo_section, boot_section,
+            ) if s
+        )
     except Exception as e:
-        sys.stderr.write(f"[persona-memory] raw save failed: {e}\n")
+        sys.stderr.write(f"[persona-memory] hook failed: {e}\n")
         return 0
 
-    # write LLM を detach 起動
-    spawn_write([episode_id])
+    # write LLM を detach 起動 (Cozo episode_id を渡す)
+    if episode_id is not None:
+        spawn_write([episode_id])
 
     if additional_context:
         _emit_additional_context(additional_context)

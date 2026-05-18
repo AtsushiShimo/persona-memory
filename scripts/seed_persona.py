@@ -17,8 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from scripts.boot.defaults import DEFAULT_BOOT_FACTS
-from scripts.db.connection import connect
-from scripts.shared.embedding import pack
+from scripts.db_cozo.connection import init_db, next_id
 from scripts.shared.ollama import OllamaClient
 
 EMBED_MODEL = os.environ.get("PERSONA_EMBED_MODEL", "nomic-embed-text")
@@ -123,26 +122,47 @@ def _normalize_address_user(raw: str) -> str:
     return s
 
 
-def _upsert_boot_fact(conn, category: str, key: str, value: str, importance: int) -> int:
-    """boot 層 (persona / rule) に upsert (UNIQUE(category,key) WHERE active を使う)。"""
-    row = conn.execute(
-        "SELECT id FROM facts WHERE category=? AND key=? AND status='active'",
-        (category, key),
-    ).fetchone()
+def _upsert_boot_fact_cozo(
+    client, category: str, key: str, value: str, importance: int,
+    embedding: list[float] | None = None,
+) -> int:
+    """Cozo に boot 層 fact を upsert (= active 1 件のみ. 同 key 既存なら値更新)."""
+    import datetime as dt
+    tz = dt.timezone(dt.timedelta(hours=9))
+    ts = dt.datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
+    row = client.run(
+        "?[id] := *fact{id, category, key, status: 'active'}, "
+        "category = $c, key = $k :limit 1",
+        {"c": category, "k": key},
+    ).get("rows", [])
     if row:
-        conn.execute(
-            "UPDATE facts SET value=?, importance=?, "
-            "  updated_at=datetime('now', '+9 hours') "
-            "WHERE id=?",
-            (value, importance, row[0]),
+        fid = row[0][0]
+    else:
+        fid = next_id(client, "fact")
+    fields = {
+        "id": fid, "c": category, "k": key, "v": value, "imp": importance,
+        "ts": ts, "src": "init",
+    }
+    if embedding:
+        fields["emb"] = embedding
+        client.run(
+            "?[id, category, key, value, importance, status, source, "
+            "created_at, updated_at, access_count, embedding] <- "
+            "[[$id, $c, $k, $v, $imp, 'active', $src, $ts, $ts, 0, $emb]] "
+            ":put fact {id => category, key, value, importance, status, "
+            "source, created_at, updated_at, access_count, embedding}",
+            fields,
         )
-        return row[0]
-    cur = conn.execute(
-        "INSERT INTO facts(category, key, value, importance, source) "
-        "VALUES (?, ?, ?, ?, 'init')",
-        (category, key, value, importance),
-    )
-    return cur.lastrowid
+    else:
+        client.run(
+            "?[id, category, key, value, importance, status, source, "
+            "created_at, updated_at, access_count] <- "
+            "[[$id, $c, $k, $v, $imp, 'active', $src, $ts, $ts, 0]] "
+            ":put fact {id => category, key, value, importance, status, "
+            "source, created_at, updated_at, access_count}",
+            fields,
+        )
+    return fid
 
 
 def seed(
@@ -172,35 +192,26 @@ def seed(
         user_facts.append(("persona", "stance", _stance_to_natural_language(stance), 9))
     facts = user_facts + DEFAULT_BOOT_FACTS
 
-    conn = connect(db_path)
-    client = OllamaClient()
-    try:
-        for category, key, value, importance in facts:
-            fid = _upsert_boot_fact(conn, category, key, value, importance)
-            conn.commit()
-            try:
-                vec = client.embed(EMBED_MODEL, f"{category}/{key}: {value}")
-                if vec:
-                    conn.execute(
-                        "INSERT OR REPLACE INTO fact_embeddings(fact_id, embedding) "
-                        "VALUES (?, ?)",
-                        (fid, pack(vec)),
-                    )
-                    conn.commit()
-                    print(f"  seeded [{category}/{key}] (importance={importance})")
-                else:
-                    print(
-                        f"  WARN seed [{category}/{key}] saved without embedding "
-                        f"(empty vector)",
-                        file=sys.stderr,
-                    )
-            except Exception as e:
-                print(
-                    f"  WARN seed [{category}/{key}] saved without embedding: {e}",
-                    file=sys.stderr,
-                )
-    finally:
-        conn.close()
+    # Cozo only (0.8.0). db_path は <persona>.db を受けるが、 実体は
+    # <persona>.cozo.db に書く. ファイルが無ければ init_db で作る.
+    cozo_path = db_path.with_suffix(".cozo.db")
+    client = init_db(cozo_path)
+    llm = OllamaClient()
+    for category, key, value, importance in facts:
+        try:
+            vec = llm.embed(EMBED_MODEL, f"{category}/{key}: {value}")
+        except Exception:
+            vec = []
+        _upsert_boot_fact_cozo(
+            client, category, key, value, importance, embedding=vec or None,
+        )
+        if vec:
+            print(f"  seeded [{category}/{key}] (importance={importance})")
+        else:
+            print(
+                f"  WARN seed [{category}/{key}] saved without embedding",
+                file=sys.stderr,
+            )
 
 
 def main() -> None:
