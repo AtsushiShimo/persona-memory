@@ -52,6 +52,10 @@ def tmp_persona(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("PERSONA_ANGER_LLM_DISABLE", "1")  # 1 段目のみ
     monkeypatch.setenv("PERSONA_TOPIC_IDENTIFY_DISABLE", "1")
     monkeypatch.setenv("PERSONA_TOPIC_DISABLE", "1")
+    # recall も off (= 通常発話で gemma3:12b summarize が 60s 超え timeout する).
+    # 反省モード hook 経路の検証だけが目的なので recall パイプラインは不要.
+    monkeypatch.setenv("PERSONA_RECALL_DISABLE", "1")
+    monkeypatch.setenv("PERSONA_COZO_DISABLE", "1")
     return {"sqlite": sqlite_path, "cozo": cozo_path, "root": tmp_path}
 
 

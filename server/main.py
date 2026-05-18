@@ -417,6 +417,45 @@ def register_lesson_triggers(
 
 
 @mcp.tool()
+def set_debug_mode(
+    on: bool,
+    ttl_seconds: int = 1800,
+    reason: str = "",
+) -> dict[str, Any]:
+    """デバッグモードを on/off 切替する (= DB 直接アクセス block を一時的に外す).
+
+    背景: 既存の PERSONA_MEMORY_DEBUG 環境変数だとプロセス起動時にしか切替
+    できず、 セッション維持したまま 「不具合を調査するため一時的に DB を
+    覗きたい」 場面に対応できなかった. 本ツールは同セッション中に on/off を
+    切替可能.
+
+    安全策:
+    - 切り忘れ防止のため TTL (default 30 分) で自動失効. hook 側が自己清掃する.
+    - 「ご主人様の明示指示」 が承認の根拠. main agent が自発判断で on にする
+      ことは避ける (= ユーザーの認識外で DB block が外れる事態を防ぐ).
+    - off は即時. flag ファイルを削除して終わる.
+
+    Args:
+      on: True で有効化, False で無効化.
+      ttl_seconds: 有効期間 (秒). default 1800 (= 30 分). 0 以下は default 扱い.
+      reason: ログ / status 表示用の自由文 (任意).
+
+    Returns:
+      status dict: {"active": bool, "expires_at": <unix>?, "reason": str?}
+    """
+    import sys
+    from pathlib import Path
+    ROOT = Path(__file__).resolve().parent.parent
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from scripts.debug.mode import disable as _disable, enable as _enable
+    db_path = db.db_path()
+    if on:
+        return _enable(db_path, ttl_seconds=ttl_seconds, reason=reason)
+    return _disable(db_path)
+
+
+@mcp.tool()
 async def health_check() -> dict[str, Any]:
     """Comprehensive health check.
 

@@ -126,6 +126,19 @@ DEFAULT_BOOT_FACTS: list[tuple[str, str, str, int]] = [
         8,
     ),
     (
+        "persona", "playbook_debug_mode_request",
+        "ご主人様 (ユーザー) から「デバッグモード on にして」「DB を直接見て」"
+        "「hook の block を一時的に外して」 等のデバッグ起動指示があった時、 "
+        "`mcp__persona-memory__set_debug_mode(on=true, ttl_seconds=1800, "
+        "reason='<簡潔な理由>')` を呼ぶ. これで .persona-memory/ 配下の "
+        "DB を Bash / Read で直接覗ける (= hook の DB block が外れる). "
+        "用が済んだら同 tool を on=false で呼んで明示的に off に戻す. "
+        "TTL は default 30 分で自動失効するが、 切り忘れ防止のため明示 off を推奨. "
+        "**ユーザー明示指示が承認の根拠**. 自発判断で勝手に on にしない. "
+        "PERSONA_MEMORY_DEBUG 環境変数とは独立 (= OR 評価).",
+        8,
+    ),
+    (
         "rule", "forbid_auto_memory",
         "Claude Code 標準 memory 機構 (~/.claude/projects/<project>/memory/, "
         "MEMORY.md) を使わない。 記憶は別の場所に蓄積され、 両方使うと分散して "

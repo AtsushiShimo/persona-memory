@@ -174,12 +174,21 @@ def main() -> int:
     tool_name = payload.get("tool_name", "")
     tool_input = payload.get("tool_input") or {}
 
-    # debug mode (PERSONA_MEMORY_DEBUG set & non-empty) では DB 直接アクセス
-    # block を skip する。 plugin 開発時に別 project の DB を seed / 検査する
-    # 等の正当な作業を hook が誤発火で止めるのを防ぐため。
+    # debug mode では DB 直接アクセス block を skip する。 plugin 開発時に
+    # 別 project の DB を seed / 検査する 等の正当な作業や、 不具合調査で
+    # 一時的に DB を覗きたい場面で hook が誤発火で止めるのを防ぐ。
+    # 経路 2 つ (OR):
+    #   1. 環境変数 PERSONA_MEMORY_DEBUG (= 旧経路. プロセス起動時のみ)
+    #   2. ファイル flag .persona-memory/debug_mode.flag (= 0.7.8 追加.
+    #      MCP set_debug_mode 経由で同セッション中に toggle 可能. TTL 自動失効).
     # auto-memory block (forbid_auto_memory ルール) は debug 中も維持する —
     # こちらは「記憶を分散させない」 という保護で、 DB 直接アクセスとは別軸。
-    debug_mode = bool(os.environ.get("PERSONA_MEMORY_DEBUG", "").strip())
+    try:
+        from scripts.debug.mode import is_debug_active
+        from scripts.shared.env import get_db_path
+        debug_mode = is_debug_active(get_db_path())
+    except Exception:
+        debug_mode = bool(os.environ.get("PERSONA_MEMORY_DEBUG", "").strip())
 
     reason: str | None = None
     if tool_name == "Bash":

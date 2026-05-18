@@ -31,7 +31,8 @@ def _seed_kwargs() -> dict:
 
 
 def test_seed_inserts_all_boot_facts(db_path: Path):
-    """boot 層 = persona 16 + rule 2 = 18 件 seed される。"""
+    """boot 層 = persona 17 + rule 2 = 19 件 seed される
+    (0.7.8 で playbook_debug_mode_request 追加)."""
     with patch("scripts.seed_persona.OllamaClient") as Mock:
         Mock.return_value.embed.return_value = []
         seed(db_path, **_seed_kwargs())
@@ -50,8 +51,8 @@ def test_seed_inserts_all_boot_facts(db_path: Path):
     persona_keys = [r[0] for r in persona_rows]
     rule_keys = [r[0] for r in rule_rows]
 
-    # persona: 7 基本 + 9 default 行動指針 = 16
-    assert len(persona_rows) == 16
+    # persona: 7 基本 + 10 default 行動指針 = 17
+    assert len(persona_rows) == 17
     for k in (
         "role", "identity", "personality", "gender", "first_person",
         "speech_style", "address_user",
@@ -60,6 +61,7 @@ def test_seed_inserts_all_boot_facts(db_path: Path):
         "no_hallucinated_user_facts",
         "playbook_after_web_research",
         "playbook_continue_topic",
+        "playbook_debug_mode_request",
     ):
         assert k in persona_keys, f"missing persona/{k}"
 
@@ -80,7 +82,7 @@ def test_seed_writes_embeddings_when_available(db_path: Path):
         n = conn.execute("SELECT COUNT(*) FROM fact_embeddings").fetchone()[0]
     finally:
         conn.close()
-    assert n == 18  # persona 16 + rule 2
+    assert n == 19  # persona 17 + rule 2 (0.7.8 で +1)
 
 
 def test_seed_idempotent(db_path: Path):
@@ -115,9 +117,10 @@ def test_seed_persona_facts_are_boot_layer(db_path: Path):
     finally:
         conn.close()
 
-    # seed されるのは persona 16 + rule 2 = 18 件だが、
+    # seed されるのは persona 17 + rule 2 = 19 件だが、
     # fetch_boot_facts は playbook_* (= 状況依存ノウハウ) を除外するため
-    # SessionStart 注入対象は 16 件 (playbook_after_web_research / playbook_continue_topic が除外)
+    # SessionStart 注入対象は 16 件
+    # (playbook_after_web_research / playbook_continue_topic / playbook_debug_mode_request が除外)
     assert len(facts) == 16
     cats = {f["category"] for f in facts}
     assert cats == {"persona", "rule"}

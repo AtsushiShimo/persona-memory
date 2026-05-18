@@ -1123,4 +1123,40 @@ Claude Code が一度注意された実装上のミスを永遠に修正出来�
 
 ---
 
-最終更新: 2026-05-17 (version 0.7.7)
+---
+
+## 16. 緊急 fix (2026-05-18, version 0.7.8)
+
+### 16.1 修正内容
+
+**A. MCP `search_memory` 致命バグ修正**
+- 症状: `no such table: facts_vec` で全 search_memory 呼出が失敗していた.
+- 原因: `server/db.py` が旧命名 `facts_vec` / `episodes_vec` を参照したまま,
+  現行 schema (= `fact_embeddings` / `episode_embeddings`) に追従していなかった.
+- ついでに `episodes.created_at` も schema rename 済 (= `timestamp`) に追従.
+  search_episodes / append_episode / gc_episodes の 3 経路を修正.
+- 回帰テスト 4 件 (`tests/test_server_db_vec.py`) 追加で再発防止.
+
+**B. デバッグモード切替を発話ベースに**
+- 旧: PERSONA_MEMORY_DEBUG 環境変数のみ (= プロセス起動時にしか切替不可).
+  セッション維持したまま「DB を一時的に覗く」 が出来ず、 不具合調査の UX が悪い.
+- 新: ファイル flag `.persona-memory/debug_mode.flag` + 新 MCP tool
+  `set_debug_mode(on, ttl_seconds, reason)`. ユーザー明示指示で main agent
+  が呼ぶ. TTL (default 30 分) で自動失効 → hook 側が自己清掃.
+- `persona/playbook_debug_mode_request` を boot defaults に追加.
+  「デバッグオン」「DB 見て」 系発話で main agent が tool を呼ぶ flow.
+- 環境変数経路は維持 (= OR 評価, 既存開発者経路を壊さない).
+
+### 16.2 検証
+- 全 587 件 PASS (= 既存 574 + 0.7.7 新規 + 0.7.8 新規). 3 既存 fail は
+  0.7.6 由来で本変更と独立.
+- 一時 DB の自己テスト: 反省モード hook + lesson trigger + デバッグ flag 整合確認.
+
+### 16.3 触ってはいけないもの (= 0.7.8 で追加)
+- `set_debug_mode` を main agent が自発判断で on にしない.
+  必ず **ご主人様明示指示** が承認の根拠 (= 認識外で DB block が外れる事態を防ぐ).
+- `debug_mode.flag` ファイルを直接 touch / 編集しない (= MCP tool 経由のみ).
+
+---
+
+最終更新: 2026-05-18 (version 0.7.8)

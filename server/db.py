@@ -111,9 +111,9 @@ def upsert_fact(
 
 def write_fact_embedding(fact_id: int, embedding_blob: bytes) -> None:
     with connect() as c:
-        c.execute("DELETE FROM facts_vec WHERE fact_id = ?", (fact_id,))
+        c.execute("DELETE FROM fact_embeddings WHERE fact_id = ?", (fact_id,))
         c.execute(
-            "INSERT INTO facts_vec(fact_id, embedding) VALUES (?, ?)",
+            "INSERT INTO fact_embeddings(fact_id, embedding) VALUES (?, ?)",
             (fact_id, embedding_blob),
         )
 
@@ -128,7 +128,7 @@ def search_facts(
         SELECT
             f.id, f.category, f.key, f.value, f.importance, f.status,
             v.distance
-        FROM facts_vec v
+        FROM fact_embeddings v
         JOIN facts f ON f.id = v.fact_id
         WHERE v.embedding MATCH ?
           AND k = ?
@@ -166,7 +166,7 @@ def find_neighbors(fact_id: int, embedding_blob: bytes, top_k: int) -> list[dict
         rows = c.execute(
             """
             SELECT v.fact_id, v.distance, f.category, f.key, f.value
-            FROM facts_vec v
+            FROM fact_embeddings v
             JOIN facts f ON f.id = v.fact_id
             WHERE v.embedding MATCH ?
               AND k = ?
@@ -250,7 +250,7 @@ def delete_fact(*, fact_id: int) -> dict | None:
         ).fetchone()
         if not row:
             return None
-        c.execute("DELETE FROM facts_vec WHERE fact_id = ?", (fact_id,))
+        c.execute("DELETE FROM fact_embeddings WHERE fact_id = ?", (fact_id,))
         c.execute("DELETE FROM facts WHERE id = ?", (fact_id,))
         return {
             "fact_id": fact_id,
@@ -267,10 +267,11 @@ def append_episode(
     content: str,
     summary: str | None,
 ) -> int:
-    # JST を明示 (legacy DB は DEFAULT が UTC のままなので)
+    # JST を明示 (legacy DB は DEFAULT が UTC のままなので).
+    # 列名は schema.sql 現行に揃える: timestamp (旧名 created_at から rename 済).
     with connect() as c:
         cur = c.execute(
-            "INSERT INTO episodes(session_id, role, content, summary, created_at) "
+            "INSERT INTO episodes(session_id, role, content, summary, timestamp) "
             "VALUES (?, ?, ?, ?, datetime('now', '+9 hours')) RETURNING id",
             (session_id, role, content, summary),
         )
@@ -279,9 +280,9 @@ def append_episode(
 
 def write_episode_embedding(episode_id: int, embedding_blob: bytes) -> None:
     with connect() as c:
-        c.execute("DELETE FROM episodes_vec WHERE episode_id = ?", (episode_id,))
+        c.execute("DELETE FROM episode_embeddings WHERE episode_id = ?", (episode_id,))
         c.execute(
-            "INSERT INTO episodes_vec(episode_id, embedding) VALUES (?, ?)",
+            "INSERT INTO episode_embeddings(episode_id, embedding) VALUES (?, ?)",
             (episode_id, embedding_blob),
         )
 
@@ -309,7 +310,7 @@ def gc_episodes(
             for r in c.execute(
                 f"SELECT id FROM episodes "
                 f"WHERE role IN ({','.join('?' * len(raw_roles))}) "
-                f"AND created_at < datetime('now', '+9 hours', ?)",
+                f"AND timestamp < datetime('now', '+9 hours', ?)",
                 (*raw_roles, f"-{raw_ttl_days} days"),
             ).fetchall()
         ]
@@ -320,7 +321,7 @@ def gc_episodes(
                 for r in c.execute(
                     "SELECT id FROM episodes "
                     "WHERE role = 'system' "
-                    "AND created_at < datetime('now', '+9 hours', ?)",
+                    "AND timestamp < datetime('now', '+9 hours', ?)",
                     (f"-{summary_ttl_days} days",),
                 ).fetchall()
             ]
@@ -328,7 +329,7 @@ def gc_episodes(
         if all_ids:
             placeholders = ",".join("?" * len(all_ids))
             c.execute(
-                f"DELETE FROM episodes_vec WHERE episode_id IN ({placeholders})",
+                f"DELETE FROM episode_embeddings WHERE episode_id IN ({placeholders})",
                 all_ids,
             )
             c.execute(
@@ -369,8 +370,9 @@ def search_episodes(*, embedding_blob: bytes, top_k: int) -> list[dict]:
     with connect() as c:
         rows = c.execute(
             """
-            SELECT e.id, e.session_id, e.role, e.summary, e.created_at, v.distance
-            FROM episodes_vec v
+            SELECT e.id, e.session_id, e.role, e.summary, e.timestamp AS created_at,
+                   v.distance
+            FROM episode_embeddings v
             JOIN episodes e ON e.id = v.episode_id
             WHERE v.embedding MATCH ?
               AND k = ?
