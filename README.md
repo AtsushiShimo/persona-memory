@@ -135,16 +135,16 @@ scripts/new-persona.sh <persona-name> <target-dir>
 
 | 用途 | 既定 | 理由 |
 |---|---|---|
-| 書き込み (Stop hook 等) | 軽量 (`gemma3:4b`) | 全 assistant ターンで発火するので低レイテンシが効く。生ターンが救命網なので質はそこそこで OK |
-| 読み出し圧縮 (proxy_recall) | 重量 (`gemma3:12b`) | recall 量が多い時だけ発火、出力はメインエージェントの context に直接注入されるので品質重視 |
+| 書き込み (write LLM, Stop hook 等) | 軽量 (`gemma3:4b`) | 全 assistant ターンで発火するので低レイテンシが効く。生ターンが救命網なので質はそこそこで OK |
+| 読み出し圧縮 (recall summarize / discussion 抽出) | 重量 (`gemma3:12b`) | recall 量が多い時だけ発火、出力はメインエージェントの context に直接注入されるので品質重視 |
 
 両方とも環境変数 (`PERSONA_LIGHT_MODEL` / `PERSONA_HEAVY_MODEL`) で上書き可能。`init.sh` の質問 1〜2 でも変更できます。
 
 ## データ・プライバシ
 
-- 全データは `data/<persona>.db` (sqlite) と `~/.claude-mem/` 等の **ローカルファイルのみ**
+- 全データは `.persona-memory/<persona>.cozo.db` (Cozo) の **ローカルファイルのみ**
 - Anthropic に送信される会話は通常通りの Claude Code 経由のみ。記憶用に追加で何か外部サーバーへ送ることはありません
-- proxy_recall.py に **シークレット検出** (`sk-...` / GitHub PAT / AWS key 等の正規表現 + 高エントロピートークン) があり、検出した場合はプロンプトを Anthropic に送る前にブロック → ユーザーへ警告
+- `scripts/secrets/detect.py` + `on-user-prompt` hook で **シークレット検出** (`sk-...` / GitHub PAT / AWS key 等の正規表現 + 高エントロピートークン)、検出した場合はプロンプトを Anthropic に送る前にブロック → ユーザーへ警告
 - DB は gitignore 済み、`.mcp.json` も per-host のため commit 対象外
 
 ## ファイル構成
@@ -167,22 +167,30 @@ scripts/
   new-persona.sh        別ペルソナ派生
   load_persona_env.sh   全 hook 共通の env 解決ヘルパ (active-persona → config.env)
   run_mcp_server.sh     MCP server 起動ラッパ
-  proxy_recall.py       UserPromptSubmit 時の recall + 圧縮
-  auto_persist.py       Stop 時の生ターン保存 + judge fact 抽出
+  hooks/                UserPromptSubmit / Stop / PreCompact / SessionEnd / SessionStart hook 本体
+  write/                write LLM (fact + 議論ノード抽出) — extract / run / similarity
+  recall/               recall LLM 部品 — extract (query 解析) / search (dataclass) / summarize (curate)
+  db_cozo/              Cozo backend (connection, repo, fact_persist, recall_full, discussion, lint, wire, migrate_from_sqlite, visualize)
+  discussion/graph.py   議論グラフ kind/state/edge 定数
+  boot/                 SessionStart で注入する boot 層 fact (persona / rule)
+  reflection/           反省モード (怒気検知, lesson trigger 適用)
+  secrets/detect.py     UserPromptSubmit 時のシークレット検出
+  debug/                記憶 DB のデバッグモード (発話ベース起動)
+  escalate/             重い処理を `claude -p` 子プロセスに逃がすヘルパ
+  shared/               共通 util (embedding, ollama client, env)
   persist_before_compact.py   PreCompact / SessionEnd 時の生 dump + summary
   gen_greeting.py       SessionStart 挨拶生成
-  seed_persona.py       初期 persona facts seed
-  init-memory.py        DB schema 初期化
+  seed_persona.py       初期 persona facts seed (Cozo に直接 upsert)
   suggest_names.py      Ollama にペルソナ名候補を提案させる
+  upgrade.py            旧 SQLite DB から Cozo への自動 migrate + boot refresh
+  health.py             Cozo 統計 + Ollama 疎通の健全性チェック
 server/
   main.py               MCP server (FastMCP)
-  db.py                 sqlite + sqlite-vec ヘルパ
+  db.py                 Cozo backend wrapper (関数シグネチャは旧 SQLite と互換)
   embedding.py          Ollama embedding 呼び出し
-db/
-  schema.sql            DB schema (timestamps は JST = UTC+9)
 tests/
-  benchmark_scenarios.md   Obsidian 等との比較テストシナリオ集
-  test_e2e.py
+  benchmark_scenarios.md       Obsidian 等との比較テストシナリオ集
+  test_e2e_cozo_only_080.py    Cozo only e2e (全 MCP 機能 + lesson trigger + hook + health)
 CLAUDE.md             プロジェクトの設計説明 (Claude エージェント向け)
 ```
 

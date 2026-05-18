@@ -1,89 +1,12 @@
-"""類似 fact の検出 (key + embedding ハイブリッド)."""
+"""類似 fact 判定の純ロジック (db_cozo/fact_persist + db_cozo/lint から import).
+
+0.8.1 で SQLite 永続化関数 (find_by_key / find_by_embedding / find_match)
+を削除し、 Cozo 直接実装の `scripts.db_cozo.fact_persist.find_match` に
+一本化. 残るのは Cozo 側からも呼ばれる純粋な属性同一判定 + 補強判定.
+"""
 from __future__ import annotations
 
-import math
-import sqlite3
-from dataclasses import dataclass
-
-from scripts.shared.embedding import pack
-
 EMBED_DISTANCE_MAX = 0.4  # cosine 距離スケール、近傍 fact 判定の閾値 (テストで調整可能)
-
-
-@dataclass
-class Match:
-    fact_id: int
-    category: str
-    key: str
-    value: str
-    importance: int
-    method: str  # 'key' or 'embedding'
-
-
-def _cosine_distance(a: list[float], b: list[float]) -> float:
-    if not a or not b or len(a) != len(b):
-        return 1.0
-    dot = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x * x for x in a))
-    nb = math.sqrt(sum(y * y for y in b))
-    if na == 0 or nb == 0:
-        return 1.0
-    return 1.0 - (dot / (na * nb))
-
-
-def find_by_key(conn: sqlite3.Connection, category: str, key: str) -> Match | None:
-    row = conn.execute(
-        "SELECT id, category, key, value, importance "
-        "FROM facts WHERE category = ? AND key = ? AND status = 'active'",
-        (category, key),
-    ).fetchone()
-    if not row:
-        return None
-    return Match(
-        fact_id=row[0], category=row[1], key=row[2],
-        value=row[3], importance=row[4], method="key",
-    )
-
-
-def find_by_embedding(
-    conn: sqlite3.Connection,
-    category: str,
-    embedding: list[float],
-    distance_max: float = EMBED_DISTANCE_MAX,
-    k: int = 10,
-) -> Match | None:
-    """同 category 内で近傍 active fact を 1 件返す。なければ None。
-
-    sqlite-vec の MATCH は別 CTE で近傍 ID + distance を取り、外側で facts
-    に JOIN + WHERE で active + 同 category に絞る。
-    """
-    if not embedding:
-        return None
-    blob = pack(embedding)
-    row = conn.execute(
-        """
-        WITH knn AS (
-          SELECT fact_id, distance
-          FROM fact_embeddings
-          WHERE embedding MATCH ? AND k = ?
-        )
-        SELECT f.id, f.category, f.key, f.value, f.importance, knn.distance
-        FROM knn
-        JOIN facts f ON f.id = knn.fact_id
-        WHERE f.status = 'active' AND f.category = ?
-        ORDER BY knn.distance
-        LIMIT 1
-        """,
-        (blob, k, category),
-    ).fetchone()
-    if not row:
-        return None
-    if row[5] > distance_max:
-        return None
-    return Match(
-        fact_id=row[0], category=row[1], key=row[2],
-        value=row[3], importance=row[4], method="embedding",
-    )
 
 
 def _strip_dup_suffix(key: str) -> str:
@@ -111,31 +34,6 @@ def _is_same_attribute(key_a: str, key_b: str) -> bool:
     b = _strip_dup_suffix(key_b).split("_")[-1].lower()
     return a == b
 
-
-def find_match(
-    conn: sqlite3.Connection,
-    category: str,
-    key: str,
-    embedding: list[float] | None,
-    distance_max: float = EMBED_DISTANCE_MAX,
-) -> Match | None:
-    """key 一致を最初にチェック → なければ embedding 近傍 (同属性のみ)。
-
-    embedding 近傍は表記揺れ救済目的だが, **末尾単語が違う場合は別属性として
-    None を返す** (= 0.5.17 で追加した暴走防止). 例: 起点 key='pet_dog_breed'
-    で近傍 fact が key='pet_dog_name' (まろん) なら別属性なので match しない.
-    """
-    m = find_by_key(conn, category, key)
-    if m:
-        return m
-    if embedding:
-        cand = find_by_embedding(conn, category, embedding, distance_max)
-        if cand and _is_same_attribute(cand.key, key):
-            return cand
-    return None
-
-
-# ── 補強 vs 変更 の判定 (heuristic、phase 6 で Claude エスカレーション追加) ─
 
 def is_reinforcement(old_value: str, new_value: str) -> bool:
     """文字列がほぼ同じなら補強、違えば変更。phase 3 は単純な heuristic。

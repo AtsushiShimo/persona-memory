@@ -1,7 +1,7 @@
 {
   "name": "persona-memory",
-  "version": "0.8.0",
-  "description": "Local-first persistent memory for Claude Code agents — per-persona SQLite + sqlite-vec store with Ollama-driven write LLM (fact extraction + supersedes) and recall LLM (keyword-intercept search). Survives /clear and session restarts.",
+  "version": "0.8.1",
+  "description": "Local-first persistent memory for Claude Code agents — per-persona Cozo (HNSW embedding + graph) store with Ollama-driven write LLM (fact extraction + supersedes + discussion-graph nodes) and recall LLM (keyword-intercept + vector + FTS + graph). Survives /clear and session restarts.",
   "author": {
     "name": "persona-memory contributors"
   },
@@ -9,7 +9,7 @@
     "memory",
     "persona",
     "ollama",
-    "sqlite"
+    "cozo"
   ],
   "mcpServers": {
     "persona-memory": {
