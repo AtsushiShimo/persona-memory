@@ -40,12 +40,12 @@ DATA_DIR="$PROJECT_DIR/.persona-memory"
 ACTIVE=""
 [ -r "$DATA_DIR/active-persona" ] && ACTIVE="$(cat "$DATA_DIR/active-persona")"
 
-if [ -z "$ACTIVE" ] || [ ! -f "$DATA_DIR/$ACTIVE.db" ]; then
+if [ -z "$ACTIVE" ] || [ ! -f "$DATA_DIR/$ACTIVE.cozo.db" ]; then
   echo "アクティブなペルソナがありません。/persona-memory:init で先に作成してください。"
   exit 1
 fi
 
-DB="$DATA_DIR/$ACTIVE.db"
+DB="$DATA_DIR/$ACTIVE.cozo.db"
 
 # 1. boot 層 default を idempotent に refresh
 echo "=== boot 層 default を refresh ==="

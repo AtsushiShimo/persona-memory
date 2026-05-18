@@ -1,8 +1,7 @@
 """Cozo 版 recall を CLI で試すデモ.
 
-migrate_from_sqlite + backfill_graph 後の DB に対して、 任意 query で
-「## 関連する議論 + 流れ」 を出力する. Sofia のフックを書き換える前に
-algorithm が動くかを手元で確かめる用途.
+任意の `<persona>.cozo.db` に対し、 任意 query で「## 関連する議論 + 流れ」
+を標準出力に書き出す. recall_topic_flow の挙動を手元で素早く確かめる用途.
 
 実行例:
   python -m scripts.db_cozo.demo_recall \\

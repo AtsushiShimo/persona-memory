@@ -243,18 +243,18 @@ def main() -> int:
     if not db:
         sys.stderr.write("PERSONA_MEMORY_DB 未設定\n")
         return 1
-    # SQLite path から Cozo path に変換
-    from scripts.db_cozo.wire import cozo_db_path_for, cozo_db_present
     from pathlib import Path
     p = Path(db)
-    if not cozo_db_present(p):
+    # 旧 SQLite path (`<persona>.db`) を受けても `.cozo.db` に振り直す.
+    if p.suffix == ".db" and not p.name.endswith(".cozo.db"):
+        p = p.with_suffix(".cozo.db")
+    if not p.exists():
         sys.stderr.write(
             f"Cozo DB が見つかりません ({p}). "
-            "/persona-memory:upgrade-cozo を先に実行してください.\n"
+            "/persona-memory:init でペルソナを作成してください.\n"
         )
         return 1
-    cozo_path = cozo_db_path_for(p)
-    result = seed_all(cozo_path)
+    result = seed_all(p)
     sys.stdout.write(
         f"lesson 書き込み: {result['lessons_written']} 件 / "
         f"trigger 登録: {result['triggers_registered']} 件\n"

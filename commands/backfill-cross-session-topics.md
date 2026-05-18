@@ -58,7 +58,7 @@ ACTIVE=""
 [ -r "$DATA_DIR/active-persona" ] && ACTIVE="$(cat "$DATA_DIR/active-persona")"
 
 if [ -z "$ACTIVE" ] || [ ! -f "$DATA_DIR/$ACTIVE.cozo.db" ]; then
-  echo "Cozo DB が見つかりません。先に /persona-memory:upgrade-cozo を実行してください。"
+  echo "Cozo DB が見つかりません。先に /persona-memory:init でペルソナを作成してください。"
   exit 1
 fi
 

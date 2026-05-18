@@ -1,22 +1,19 @@
-"""/persona-memory:upgrade — boot 層 default refresh + 旧 SQLite データ救済 (0.8.0).
+"""/persona-memory:upgrade — boot 層 default refresh + config.env 相対パス化.
 
-業務フローは Cozo 単独 (= server / hook / write / lint / recall) になったため、
-upgrade の仕事は以下に簡略化された:
+業務フローは Cozo 単独 (= server / hook / write / lint / recall) のため、
+upgrade の仕事は 2 つに簡略化された:
 
-1. **旧 SQLite データ救済 (= 後方互換 migrate)**:
-   `<persona>.db` (SQLite) があり、 `<persona>.cozo.db` が空 / 未存在の場合、
-   SQLite から Cozo に facts / episodes / topics 等を完全コピーする
-   (= scripts.db_cozo.migrate_from_sqlite.migrate を流用). SQLite ファイル
-   自体は読み専用バックアップとして物理残置.
-
-2. **Cozo boot fact refresh**:
+1. **Cozo boot fact refresh**:
    `scripts.boot.defaults.DEFAULT_BOOT_FACTS` の最新版を Cozo に idempotent
    upsert. 値が変わっていれば update, 廃止 default (DEPRECATED_BOOT_FACTS)
    は status='superseded' に降格.
 
-3. **config.env の相対パス化** (= ペルソナディレクトリの可搬性確保).
+2. **config.env の相対パス化** (= ペルソナディレクトリの可搬性確保).
 
 ペルソナ固有属性 (role / identity / personality / etc.) は触らない.
+
+0.8.2 で旧 SQLite → Cozo migrate 経路を削除. SQLite ペルソナを抱えている
+ユーザーは 0.8.1 までに /persona-memory:upgrade で移行を済ませている前提.
 """
 from __future__ import annotations
 
@@ -39,37 +36,6 @@ def _now_jst() -> str:
     import datetime as dt
     tz = dt.timezone(dt.timedelta(hours=9))
     return dt.datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
-
-
-def _migrate_legacy_sqlite_to_cozo(sqlite_db: Path) -> dict:
-    """旧 SQLite データを Cozo に完全コピー (.cozo.db が空時のみ).
-
-    scripts.db_cozo.migrate_from_sqlite.migrate に丸投げ. SQLite ファイル
-    自体は触らず (= 読み専用バックアップとして物理残置).
-    """
-    cozo_path = sqlite_db.with_suffix(".cozo.db")
-    cozo_existed = cozo_path.exists()
-    # Cozo DB 初期化 (存在しなければ作る)
-    init_db(cozo_path)
-    if not sqlite_db.exists():
-        return {"migrated": False, "reason": "sqlite db not found"}
-    # Cozo に既に fact があるかチェック (= 既に移行済 or 新規 init 直後)
-    client = init_db(cozo_path)
-    n = client.run(
-        "?[c] := *fact{id}, c = id :limit 1",
-    ).get("rows", [])
-    if n:
-        return {
-            "migrated": False,
-            "reason": "cozo already has data" if cozo_existed else "cozo just initialized",
-        }
-    # migrate を呼ぶ
-    try:
-        from scripts.db_cozo.migrate_from_sqlite import migrate
-        result = migrate(sqlite_db, cozo_path)
-        return {"migrated": True, **result}
-    except Exception as e:
-        return {"migrated": False, "reason": f"migrate failed: {e}"}
 
 
 def _upsert_boot_fact_cozo(
@@ -152,13 +118,15 @@ def _deprecate_boot_fact_cozo(client, category: str, key: str) -> bool:
     return True
 
 
-def _migrate_config_env_to_relative(db_path: Path) -> str:
+def _migrate_config_env_to_relative(cozo_path: Path) -> str:
     """旧 config.env の絶対パスを ${CLAUDE_PROJECT_DIR} 基準に書き換え.
 
     戻り値: 'migrated' / 'already' / 'skipped'.
     """
-    persona = db_path.stem
-    config_env = db_path.parent / f"{persona}.config.env"
+    persona = cozo_path.stem
+    if persona.endswith(".cozo"):
+        persona = persona[: -len(".cozo")]
+    config_env = cozo_path.parent / f"{persona}.config.env"
     if not config_env.exists():
         return "skipped"
     text = config_env.read_text(encoding="utf-8")
@@ -178,23 +146,17 @@ def _migrate_config_env_to_relative(db_path: Path) -> str:
     return "skipped"
 
 
-def upgrade(db_path: Path) -> dict[str, int]:
-    """旧 DB の救済 + boot 層 default refresh."""
+def upgrade(cozo_path: Path) -> dict[str, int]:
+    """boot 層 default refresh + config.env 相対パス化.
+
+    cozo_path: `<persona>.cozo.db` への絶対 / 相対パス.
+    """
     counts = {
-        "sqlite_to_cozo_migrated": 0,
         "inserted": 0, "updated": 0, "unchanged": 0, "deprecated": 0,
         "config_env_migrated": 0,
     }
 
-    # 1. SQLite → Cozo 救済
-    if db_path.exists() and db_path.suffix == ".db" and not db_path.name.endswith(".cozo.db"):
-        result = _migrate_legacy_sqlite_to_cozo(db_path)
-        if result.get("migrated"):
-            counts["sqlite_to_cozo_migrated"] = 1
-            print(f"  migrated SQLite → Cozo: {result}")
-
-    # 2. Cozo boot fact refresh
-    cozo_path = db_path.with_suffix(".cozo.db")
+    # 1. Cozo boot fact refresh
     client = init_db(cozo_path)
     llm = OllamaClient()
 
@@ -218,8 +180,8 @@ def upgrade(db_path: Path) -> dict[str, int]:
         elif action == "updated":
             print(f"  updated [{category}/{key}]")
 
-    # 3. config.env 相対パス化
-    cfg_status = _migrate_config_env_to_relative(db_path)
+    # 2. config.env 相対パス化
+    cfg_status = _migrate_config_env_to_relative(cozo_path)
     if cfg_status == "migrated":
         counts["config_env_migrated"] = 1
         print("  migrated config.env to ${CLAUDE_PROJECT_DIR}")
@@ -228,9 +190,9 @@ def upgrade(db_path: Path) -> dict[str, int]:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Refresh boot facts + migrate legacy SQLite")
+    p = argparse.ArgumentParser(description="Refresh boot facts + relative-path config")
     p.add_argument("--db", type=Path, default=None,
-                   help="DB ファイルパス (未指定時は PERSONA_MEMORY_DB env)")
+                   help="Cozo DB ファイルパス (未指定時は PERSONA_MEMORY_DB env)")
     args = p.parse_args()
 
     db_path = args.db
@@ -241,8 +203,18 @@ def main() -> None:
             sys.exit(2)
         db_path = Path(env_db)
 
+    # 旧 SQLite path (`<persona>.db`) を受けても `.cozo.db` に振り直す.
+    # 0.8.2 で SQLite 経路を廃止したため、 caller がまだ旧 path を渡してきた
+    # 場合の救済 (path-only 救済 = 実 SQLite ファイルからは読まない).
+    if db_path.suffix == ".db" and not db_path.name.endswith(".cozo.db"):
+        db_path = db_path.with_suffix(".cozo.db")
+
     if not db_path.exists():
-        print(f"ERROR: DB not found: {db_path}", file=sys.stderr)
+        print(f"ERROR: Cozo DB not found: {db_path}", file=sys.stderr)
+        print(
+            "  /persona-memory:init で新規ペルソナを作成してください.",
+            file=sys.stderr,
+        )
         sys.exit(2)
 
     print(f"=== boot 層 default を refresh ===")

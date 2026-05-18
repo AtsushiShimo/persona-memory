@@ -113,8 +113,8 @@ def find_match(
 def _put_fact(client: Client, row: dict) -> None:
     """fact 行の全 column を埋めて put (= upsert).
 
-    embedding は migrate_from_sqlite と同じ分岐: 値があれば vec() で wrap して
-    schema に含め, None なら schema 自体から除外 (= default null).
+    embedding は値があれば vec() で wrap して schema に含め, None なら
+    schema 自体から除外 (= default null).
     """
     params = {
         "id": row["id"], "cat": row["category"], "key": row["key"],

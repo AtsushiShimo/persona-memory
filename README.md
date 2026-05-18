@@ -170,7 +170,7 @@ scripts/
   hooks/                UserPromptSubmit / Stop / PreCompact / SessionEnd / SessionStart hook 本体
   write/                write LLM (fact + 議論ノード抽出) — extract / run / similarity
   recall/               recall LLM 部品 — extract (query 解析) / search (dataclass) / summarize (curate)
-  db_cozo/              Cozo backend (connection, repo, fact_persist, recall_full, discussion, lint, wire, migrate_from_sqlite, visualize)
+  db_cozo/              Cozo backend (connection, repo, fact_persist, recall_full, discussion, lint, wire, visualize)
   discussion/graph.py   議論グラフ kind/state/edge 定数
   boot/                 SessionStart で注入する boot 層 fact (persona / rule)
   reflection/           反省モード (怒気検知, lesson trigger 適用)

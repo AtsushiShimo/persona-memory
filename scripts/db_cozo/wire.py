@@ -1,12 +1,13 @@
 """hook 配線ヘルパ.
 
 役割:
-- SQLite DB と並んで `<persona>.cozo.db` が存在するか判定
-- 存在すれば Cozo recall (流れ再構築) ブロックを生成して返す
-- 存在しなければ "" (no-op) — SQLite 経路は無傷
+- `<persona>.cozo.db` が存在するか判定 (= ペルソナ init 済か)
+- 存在すれば Cozo recall (流れ再構築 / topic / graph) ブロックを生成して返す
+- 存在しなければ "" (no-op) — init 未実行扱い
 
-これで /persona-memory:upgrade-cozo を走らせたユーザーだけが新経路を
-体験する形 (= incremental rollout. SQLite ユーザーには影響ゼロ).
+0.8.0 で業務フローを Cozo only 化、 0.8.2 で SQLite migrate 経路も廃止.
+旧 SQLite path (PERSONA_MEMORY_DB env が `<persona>.db`) を受けた caller の
+ために `cozo_db_path_for` で `.cozo.db` に振り直す path-only 救済のみ残置.
 """
 from __future__ import annotations
 

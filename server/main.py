@@ -361,10 +361,10 @@ def register_lesson_triggers(
                   default は "warn".
 
     旧 trigger があれば一掃 (= 同 lesson_key に対する登録は上書き). lesson 本体が
-    SQLite/Cozo どちらにも見当たらない場合は error を返す.
+    Cozo に見当たらない場合は error を返す.
 
-    Cozo 不在環境 (旧 SQLite-only ペルソナ) では機能しない. その場合は
-    /persona-memory:upgrade-cozo を先に実行する必要がある.
+    Cozo DB 不在 (= ペルソナ init 未実行) では機能しない. その場合は
+    /persona-memory:init を先に実行する必要がある.
 
     Returns:
       {"registered": <int>, "lesson_fact_id": <int>} on success.
@@ -383,7 +383,7 @@ def register_lesson_triggers(
 
     sqlite_path = db.db_path()
     if not cozo_db_present(sqlite_path):
-        return {"error": "Cozo DB が見つかりません. /persona-memory:upgrade-cozo を実行してください."}
+        return {"error": "Cozo DB が見つかりません. /persona-memory:init を実行してください."}
     cozo_path = cozo_db_path_for(sqlite_path)
     try:
         client = _cozo_init(cozo_path)

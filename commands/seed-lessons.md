@@ -16,7 +16,7 @@ Section 14.5) を「再発防止 lesson」 として記憶に書き込む。 反
 **冪等**: 何度実行しても結果は同じ. 既存 lesson があれば value 更新, trigger は
 一掃してから再登録される.
 
-**前提**: Cozo DB が初期化済であること (`/persona-memory:upgrade-cozo` 実行済).
+**前提**: Cozo DB が初期化済であること (`/persona-memory:init` 実行済).
 
 ## 実行
 
@@ -46,18 +46,12 @@ DATA_DIR="$PROJECT_DIR/.persona-memory"
 ACTIVE=""
 [ -r "$DATA_DIR/active-persona" ] && ACTIVE="$(cat "$DATA_DIR/active-persona")"
 
-if [ -z "$ACTIVE" ] || [ ! -f "$DATA_DIR/$ACTIVE.db" ]; then
+if [ -z "$ACTIVE" ] || [ ! -f "$DATA_DIR/$ACTIVE.cozo.db" ]; then
   echo "アクティブなペルソナがありません。/persona-memory:init で先に作成してください。"
   exit 1
 fi
 
-DB="$DATA_DIR/$ACTIVE.db"
-COZO="$DATA_DIR/$ACTIVE.cozo.db"
-
-if [ ! -f "$COZO" ]; then
-  echo "Cozo DB が見つかりません。/persona-memory:upgrade-cozo を先に実行してください。"
-  exit 1
-fi
+DB="$DATA_DIR/$ACTIVE.cozo.db"
 
 PERSONA_MEMORY_DB="$DB" \
 PYTHONPATH="$PLUGIN_ROOT" \
