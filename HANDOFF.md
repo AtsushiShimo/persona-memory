@@ -1035,7 +1035,8 @@ Phase 5 Cozo 単独化) の文脈を 1 ターン以内に取り戻せる.
 2. `HANDOFF.md` Section 14.5 (= 過去叱責 11 項. lesson seed の原典)
 3. `git log --oneline -3`
 4. 新規モジュール:
-   - `scripts/reflection/detect.py` (怒気検知: keyword + light LLM 2 段判定)
+   - `scripts/reflection/detect.py` (怒気検知: 0.8.5 で LLM-only 化. 旧版の正規表現 1 段目は取りこぼし温床として撤廃)
+   - `scripts/reflection/emergency.py` (0.8.5 緊急停止経路. slash `/persona-memory:reflection-off` から発火)
    - `scripts/reflection/state.py` (反省モード state 管理 = Cozo)
    - `scripts/reflection/lesson.py` (lesson + trigger の CRUD + マッチング)
    - `scripts/reflection/instruction.py` (additionalContext 用 instruction)
@@ -1379,6 +1380,36 @@ AI には phased migration / 段階リリース / 並走期 / バックアップ
   fixture を組んでいたため新形式の二重 suffix バグを検出できていなかった
   (= テストギャップ)
 
+### 19.5 0.8.5 — 怒気検知 LLM-only 化 + 緊急停止経路 + disable 一元化
+
+旧版の検知は 「1 段目 正規表現キーワード → 2 段目 LLM」 の 2 段構成だったが、
+ご主人様の `anger_detection_sensitivity = 強め` 方針に対して **1 段目の
+keyword 集合に入らない発話は LLM に届かない** = 取りこぼし温床として致命的.
+合わせて緊急 revert を env (`PERSONA_ANGER_DETECT_DISABLE`) 残置で済ませて
+いたが、 (a) セッション再起動が要る、 (b) 動的フラグと **並走負債** に
+なる、 の二重欠陥でご指摘を受けた.
+
+- `scripts/reflection/detect.py`: 正規表現 1 段目 (`_ANGER_KEYWORD_RE`) と
+  `PERSONA_ANGER_LLM_DISABLE` / `PERSONA_ANGER_DETECT_DISABLE` 双方を撤廃.
+  全発話を直接 LLM (`gemma3:4b`) に投げて 「anger / neutral」 を判定.
+  LLM 失敗時は anger 側に倒す (= 取りこぼし禁止方針を維持).
+- `scripts/reflection/state.py`: `detection_enabled` (= 検知の on/off)
+  を Cozo `reflection_state` に persist. `clear()` で消えない別キー設計
+  なので「反省 state 解除」 と「検知 disable」 を直交させた.
+- `scripts/hooks/on_user_prompt.py`: `is_detection_enabled()` を読んで
+  disable 時は `detect_anger` ごと skip (= LLM call を止める).
+- `scripts/reflection/emergency.py` (新規) + `commands/reflection-{off,on}.md`:
+  slash command で同セッション中に動的切替. env 再起動不要.
+- `server/main.py`: MCP tool `set_anger_detection(enabled, clear_state)`.
+  ペルソナ自身が 「ご主人様、 検知を止めますか?」 と提案して切れる経路.
+- env 経由 disable は **完全削除** (= 並走負債禁止 / `design_drift_zero_tolerance`).
+  全 disable 経路は DB persisted flag に一元化.
+- テスト: `tests/test_reflection_detect.py` LLM-only に書き直し,
+  `tests/test_reflection_state.py` に detection_enabled テスト追加,
+  `tests/test_reflection_emergency.py` (新規) で slash CLI と MCP tool の
+  両入口を verify, `tests/test_reflection_hooks.py` に動的 disable 経由の
+  skip テスト + 怒気/通常発話の hook 統合テストを Ollama 必須で skipif 化.
+
 ---
 
-最終更新: 2026-05-18 (version 0.8.4)
+最終更新: 2026-05-19 (version 0.8.5)

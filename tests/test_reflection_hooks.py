@@ -14,6 +14,16 @@ from pathlib import Path
 import pytest
 
 
+def _ollama_reachable() -> bool:
+    import urllib.error
+    import urllib.request
+    try:
+        urllib.request.urlopen("http://localhost:11434", timeout=2)
+        return True
+    except (urllib.error.URLError, OSError, ConnectionError):
+        return False
+
+
 @pytest.fixture
 def tmp_persona(tmp_path: Path, monkeypatch):
     """一時 DB 環境. SQLite + Cozo の両 schema を作って active-persona を設定."""
@@ -31,7 +41,8 @@ def tmp_persona(tmp_path: Path, monkeypatch):
 
     monkeypatch.setenv("PERSONA_MEMORY_DB", str(sqlite_path))
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
-    monkeypatch.setenv("PERSONA_ANGER_LLM_DISABLE", "1")  # 1 段目のみ
+    # 0.8.5: LLM-only 検知になったため keyword bypass フラグは消滅.
+    # hook 統合テストは実 Ollama を要求する (= ローカル開発前提).
     monkeypatch.setenv("PERSONA_TOPIC_IDENTIFY_DISABLE", "1")
     monkeypatch.setenv("PERSONA_TOPIC_DISABLE", "1")
     # recall も off (= 通常発話で gemma3:12b summarize が 60s 超え timeout する).
@@ -89,6 +100,8 @@ def test_pretool_blocks_seeded_path_via_full_main(tmp_persona):
     assert data["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
+@pytest.mark.skipif(not _ollama_reachable(),
+                    reason="LLM-only 検知は実 Ollama を要求する")
 def test_userprompt_injects_reflection_on_anger(tmp_persona):
     """怒気発話 → additionalContext に「反省モード」 ブロックが含まれる."""
     payload = {
@@ -111,6 +124,35 @@ def test_userprompt_injects_reflection_on_anger(tmp_persona):
     assert "謝罪" in ctx
 
 
+def test_userprompt_skips_detection_when_dynamically_disabled(tmp_persona):
+    """detection_enabled=False を DB に persist しておくと、 怒り発話でも
+    反省モードが発火しない (= LLM call も skip されるため Ollama 不要)."""
+    from scripts.db_cozo.connection import init_db
+    from scripts.reflection.state import set_detection_enabled
+    client = init_db(tmp_persona["cozo"])
+    set_detection_enabled(client, False)
+
+    payload = {
+        "prompt": "ちげーよ、 やり直して",
+        "session_id": "test-session-disabled",
+    }
+    proc = subprocess.run(
+        [sys.executable, "-m", "scripts.hooks.on_user_prompt"],
+        input=json.dumps(payload),
+        text=True, capture_output=True,
+        env={**os.environ, "PYTHONPATH": "."},
+        timeout=30,
+    )
+    assert proc.returncode == 0, f"stderr={proc.stderr}"
+    out = proc.stdout.strip()
+    if out:
+        data = json.loads(out)
+        ctx = data["hookSpecificOutput"].get("additionalContext", "")
+        assert "【反省モード発火】" not in ctx
+
+
+@pytest.mark.skipif(not _ollama_reachable(),
+                    reason="LLM-only 検知は実 Ollama を要求する")
 def test_userprompt_no_reflection_on_normal(tmp_persona):
     """通常発話では反省モードブロックが出ない."""
     payload = {

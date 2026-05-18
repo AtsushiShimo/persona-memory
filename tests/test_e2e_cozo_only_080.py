@@ -97,13 +97,18 @@ def test_hook_user_prompt_runs_without_sqlite(fresh_persona):
     import os
     import subprocess
     import sys
+    # 0.8.5 LLM-only 化以降、 怒気検知の skip は DB persisted flag に集約.
+    # この e2e は LLM call なしで完走させたいので、 事前に disable を刻む.
+    from scripts.db_cozo.connection import init_db
+    from scripts.reflection.state import set_detection_enabled
+    set_detection_enabled(init_db(fresh_persona["cozo"]), False)
+
     env = {
         **os.environ,
         "PYTHONPATH": ".",
         "PERSONA_TOPIC_IDENTIFY_DISABLE": "1",
         "PERSONA_TOPIC_DISABLE": "1",
         "PERSONA_RECALL_DISABLE": "1",
-        "PERSONA_ANGER_LLM_DISABLE": "1",
         "PERSONA_WRITE_DISABLE": "1",
         "PERSONA_MEMORY_DB": str(fresh_persona["sqlite"]),
         "CLAUDE_PROJECT_DIR": str(fresh_persona["sqlite"].parent.parent),

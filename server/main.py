@@ -456,6 +456,59 @@ def set_debug_mode(
 
 
 @mcp.tool()
+def set_anger_detection(
+    enabled: bool,
+    clear_state: bool = True,
+) -> dict[str, Any]:
+    """怒気検知の on/off 切替 (0.8.5).
+
+    背景: 反省モードが誤発火し続けたり LLM 判定がハングした時、 セッション
+    再起動なしで即時に止めたい. DB persisted flag を切替えるので、 本 tool
+    と slash command `/persona-memory:reflection-off` の両経路が同じ状態を
+    指す. env 変数による切替経路は並走負債のため設けない.
+
+    ペルソナ自身が「ご主人様、 検知を一旦止めますか?」 と提案して叩く
+    用途も想定. ただし **ご主人様の明示承認が前提** — main agent が独断で
+    off にしてはならない (= 自己治癒のつもりが叱責回避になりかねないため).
+
+    Args:
+      enabled: True で検知を有効化, False で無効化.
+      clear_state: enabled=False の時、 現在進行中の反省 state も clear するか.
+        default True (= 多くの場合 「抜けられない反省モードを抜ける」 用途).
+
+    Returns:
+      {"ok": bool, "detection_enabled": bool, "reflection_state_cleared": bool}
+    """
+    import sys
+    from pathlib import Path
+    ROOT = Path(__file__).resolve().parent.parent
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from scripts.db_cozo.connection import init_db
+    from scripts.db_cozo.wire import cozo_db_path_for
+    from scripts.reflection.state import (
+        clear as _clear,
+        get_state,
+        set_detection_enabled,
+    )
+    cozo_path = cozo_db_path_for(db.db_path())
+    if not cozo_path.exists():
+        return {"ok": False, "error": f"Cozo DB が無い: {cozo_path}"}
+    client = init_db(cozo_path)
+    cleared = False
+    if not enabled and clear_state:
+        if get_state(client).active:
+            _clear(client)
+            cleared = True
+    set_detection_enabled(client, enabled)
+    return {
+        "ok": True,
+        "detection_enabled": enabled,
+        "reflection_state_cleared": cleared,
+    }
+
+
+@mcp.tool()
 async def health_check() -> dict[str, Any]:
     """Comprehensive health check.
 

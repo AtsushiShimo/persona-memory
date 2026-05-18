@@ -7,7 +7,8 @@ import pytest
 
 from scripts.db_cozo.connection import init_db
 from scripts.reflection.state import (
-    MAX_TURNS, clear, enter, get_state, increment_turn, should_force_clear,
+    MAX_TURNS, clear, enter, get_state, increment_turn,
+    is_detection_enabled, set_detection_enabled, should_force_clear,
 )
 
 
@@ -74,3 +75,25 @@ def test_force_clear_threshold(client, monkeypatch):
 def test_force_clear_under_threshold(client):
     enter(client, episode_id=1, anger_phrase="x")
     assert should_force_clear(client) is False
+
+
+def test_detection_enabled_default_true(client):
+    """新規 DB では検知は有効扱い (= default on)."""
+    assert is_detection_enabled(client) is True
+
+
+def test_detection_enabled_toggle(client):
+    set_detection_enabled(client, False)
+    assert is_detection_enabled(client) is False
+    set_detection_enabled(client, True)
+    assert is_detection_enabled(client) is True
+
+
+def test_detection_flag_survives_clear(client):
+    """clear() は反省 state のみ解除. detection_enabled は別フラグなので残る."""
+    set_detection_enabled(client, False)
+    enter(client, episode_id=1, anger_phrase="x")
+    clear(client)
+    # active は消えるが detection_enabled は維持
+    assert get_state(client).active is False
+    assert is_detection_enabled(client) is False

@@ -11,6 +11,10 @@ state schema (key/value 形式):
 - "trigger_episode_id": str(int)
 - "anger_phrase": str
 - "turn_count": str(int)  反省モード突入以降のターン数
+- "detection_enabled": "1" or "0"  怒気検知の on/off フラグ
+  (0.8.5 — slash command `/persona-memory:reflection-off` や MCP tool
+  `set_anger_detection` から切替). 未設定時は有効扱い (= default on).
+  env 変数による切替は廃止 (並走負債を作らないため DB 一元管理).
 
 env:
 - PERSONA_REFLECTION_MAX_TURNS (default 20): 解除されないまま N ターン続いたら
@@ -120,3 +124,20 @@ def should_force_clear(client: Client) -> bool:
     """N ターン経過していたら強制 auto-clear すべき (セーフティネット)."""
     cur = get_state(client)
     return cur.active and cur.turn_count >= MAX_TURNS
+
+
+# ── 怒気検知の動的 on/off (0.8.5) ──
+# 検知の on/off は DB persisted flag のみで管理する. env 変数による切替経路は
+# 並走負債になるため排除. slash command / MCP tool から動的に切れる.
+
+def is_detection_enabled(client: Client) -> bool:
+    """怒気検知が有効か. 未設定 (= 新規 DB) は有効扱い."""
+    v = _get(client, "detection_enabled")
+    if v is None:
+        return True
+    return v == "1"
+
+
+def set_detection_enabled(client: Client, enabled: bool) -> None:
+    """怒気検知の動的 on/off を persist."""
+    _put(client, "detection_enabled", "1" if enabled else "0")

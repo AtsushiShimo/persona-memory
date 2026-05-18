@@ -88,10 +88,15 @@ def main() -> int:
             from scripts.reflection.state import (
                 clear as _r_clear, enter as _r_enter,
                 get_state as _r_get, increment_turn as _r_inc,
+                is_detection_enabled as _r_det_on,
                 should_force_clear as _r_force,
             )
             rstate = _r_get(client)
-            angry, phrase = detect_anger(prompt, OllamaClient())
+            # 動的 disable (slash / MCP toggle) で検知 skip. 既 active なら継続.
+            if _r_det_on(client):
+                angry, phrase = detect_anger(prompt, OllamaClient())
+            else:
+                angry, phrase = False, ""
             if angry:
                 _r_enter(client, episode_id=0, anger_phrase=phrase)
                 reflection_block = format_enter_instruction(phrase)
