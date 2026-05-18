@@ -16,13 +16,20 @@ import sys
 from pathlib import Path
 
 
-def cozo_db_path_for(sqlite_db: Path) -> Path:
-    """`/path/<persona>.db` → `/path/<persona>.cozo.db`."""
-    return sqlite_db.with_suffix(".cozo.db")
+def cozo_db_path_for(db_path: Path) -> Path:
+    """`<persona>.db` (旧 SQLite) または `<persona>.cozo.db` を `.cozo.db` に正規化.
+
+    冪等: 既に `.cozo.db` で終わるパスはそのまま返す. これにより新規 caller が
+    `<persona>.cozo.db` を直接渡しても `.cozo.cozo.db` のような二重 suffix
+    に膨れないことを保証する.
+    """
+    if db_path.name.endswith(".cozo.db"):
+        return db_path
+    return db_path.with_suffix(".cozo.db")
 
 
-def cozo_db_present(sqlite_db: Path) -> bool:
-    return cozo_db_path_for(sqlite_db).exists()
+def cozo_db_present(db_path: Path) -> bool:
+    return cozo_db_path_for(db_path).exists()
 
 
 def cozo_disabled() -> bool:

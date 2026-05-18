@@ -3,17 +3,16 @@
 #
 # Resolves the active persona and exports the env vars that the hook's
 # Python entry-point will read:
-#   PERSONA_MEMORY_DB    — sqlite DB path
-#   PERSONA_LIGHT_MODEL  — write-time judge / per-turn fact extraction
-#   PERSONA_HEAVY_MODEL  — read-time recall compression (proxy_recall)
+#   PERSONA_MEMORY_DB    — Cozo DB path (`<persona>.cozo.db`)
+#   PERSONA_LIGHT_MODEL  — write-time fact extraction (write LLM)
+#   PERSONA_HEAVY_MODEL  — read-time recall summarize / discussion extract
 #   PERSONA_EMBED_MODEL  — embedding model
 #   OLLAMA_HOST          — Ollama daemon
 #   PERSONA_JUDGE_MODEL  — back-compat alias for write-side scripts
-#   PERSONA_RECALL_COMPRESS_MODEL — read-side override for proxy_recall
+#   PERSONA_RECALL_COMPRESS_MODEL — back-compat alias (heavy model)
 #
-# Lookup order (first match wins):
-#   1. Plugin form: $CLAUDE_PLUGIN_DATA/{active-persona, personas/<name>/config.env}
-#   2. Standalone:  $SCRIPT_HOME/data/{active-persona, <name>.config.env}
+# Lookup order (project-local only):
+#   $CLAUDE_PROJECT_DIR/.persona-memory/{active-persona, <name>.config.env}
 #
 # Per rule/model_weight_policy:
 #   - write side (high frequency, raw turns are safety net) → light model
@@ -73,21 +72,21 @@ export PERSONA_LIGHT_MODEL="${PERSONA_LIGHT_MODEL:-gemma3:4b}"
 export PERSONA_HEAVY_MODEL="${PERSONA_HEAVY_MODEL:-gemma3:12b}"
 export PERSONA_EMBED_MODEL="${PERSONA_EMBED_MODEL:-nomic-embed-text}"
 
-# Resolve DB path if config.env didn't set it: project-local <persona>.db.
+# Resolve DB path if config.env didn't set it: project-local <persona>.cozo.db.
+# 旧 SQLite path (`<persona>.db`) しか手元に無い古い config.env は upgrade で
+# in-place migrate されるため、 ここでは Cozo path のみを fallback として見る.
 if [ -z "${PERSONA_MEMORY_DB:-}" ] && [ -n "$_ACTIVE_PERSONA" ]; then
-  if [ -f "$_PERSONA_DATA_DIR/$_ACTIVE_PERSONA.db" ]; then
-    export PERSONA_MEMORY_DB="$_PERSONA_DATA_DIR/$_ACTIVE_PERSONA.db"
+  if [ -f "$_PERSONA_DATA_DIR/$_ACTIVE_PERSONA.cozo.db" ]; then
+    export PERSONA_MEMORY_DB="$_PERSONA_DATA_DIR/$_ACTIVE_PERSONA.cozo.db"
   fi
 fi
 
-# Aliases consumed by the existing Python entry-points.
-# - PERSONA_JUDGE_MODEL is what auto_persist / persist_before_compact read.
-# - PERSONA_RECALL_COMPRESS_MODEL is what proxy_recall reads.
+# Aliases consumed by Python entry-points (back-compat with pre-0.8 names).
 export PERSONA_JUDGE_MODEL="${PERSONA_JUDGE_MODEL:-$PERSONA_LIGHT_MODEL}"
 export PERSONA_RECALL_COMPRESS_MODEL="${PERSONA_RECALL_COMPRESS_MODEL:-$PERSONA_HEAVY_MODEL}"
 
 # CRITICAL: variables sourced from config.env are *shell-local* unless we
-# export them. Python child processes (MCP server, auto_persist.py, etc.)
+# export them. Python child processes (MCP server, write/run.py, etc.)
 # only see the environment, not the shell scope. Without these explicit
 # exports, PERSONA_MEMORY_DB is invisible to Python and the MCP server's
 # write_fact / append_episode tools fail with "PERSONA_MEMORY_DB unset".

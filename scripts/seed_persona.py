@@ -192,9 +192,11 @@ def seed(
         user_facts.append(("persona", "stance", _stance_to_natural_language(stance), 9))
     facts = user_facts + DEFAULT_BOOT_FACTS
 
-    # Cozo only (0.8.0). db_path は <persona>.db を受けるが、 実体は
-    # <persona>.cozo.db に書く. ファイルが無ければ init_db で作る.
-    cozo_path = db_path.with_suffix(".cozo.db")
+    # Cozo only. db_path は `.cozo.db` 直接 or 旧 `.db` のどちらでも受ける
+    # (0.8.3 で env テンプレを `.cozo.db` 直接に切替済. 旧 caller 互換).
+    # ファイルが無ければ init_db で作る.
+    from scripts.db_cozo.wire import cozo_db_path_for
+    cozo_path = cozo_db_path_for(db_path)
     client = init_db(cozo_path)
     llm = OllamaClient()
     for category, key, value, importance in facts:

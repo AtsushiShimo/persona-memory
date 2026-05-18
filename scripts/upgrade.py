@@ -118,42 +118,61 @@ def _deprecate_boot_fact_cozo(client, category: str, key: str) -> bool:
     return True
 
 
-def _migrate_config_env_to_relative(cozo_path: Path) -> str:
-    """旧 config.env の絶対パスを ${CLAUDE_PROJECT_DIR} 基準に書き換え.
+def _migrate_config_env(cozo_path: Path) -> dict[str, bool]:
+    """config.env を 0.8.x 仕様に in-place migrate.
 
-    戻り値: 'migrated' / 'already' / 'skipped'.
+    2 軸の書き換え (idempotent, どちらも独立に実行されうる):
+      (a) 絶対パスを ${CLAUDE_PROJECT_DIR} 基準に書き換え
+      (b) PERSONA_MEMORY_DB の suffix が旧 SQLite path (`.db` で `.cozo.db`
+          で終わらないもの) を `.cozo.db` に書き換え
+
+    戻り値: {'relative': bool, 'cozo_suffix': bool} 各書き換えが発生したか.
     """
     persona = cozo_path.stem
     if persona.endswith(".cozo"):
         persona = persona[: -len(".cozo")]
     config_env = cozo_path.parent / f"{persona}.config.env"
     if not config_env.exists():
-        return "skipped"
+        return {"relative": False, "cozo_suffix": False}
     text = config_env.read_text(encoding="utf-8")
-    if "${CLAUDE_PROJECT_DIR}" in text or "$CLAUDE_PROJECT_DIR" in text:
-        return "already"
-    # 絶対パス形式を相対形式に書き換え
-    pattern = re.compile(
-        r"^(PERSONA_MEMORY_DB=)(?:'|\")?/[^'\"\n]+/(\.persona-memory/[^'\"\n]+\.db)(?:'|\")?$",
+    new_text = text
+    relative_migrated = False
+    cozo_suffix_migrated = False
+
+    # (a) 絶対パス → ${CLAUDE_PROJECT_DIR} 相対
+    if "${CLAUDE_PROJECT_DIR}" not in new_text and "$CLAUDE_PROJECT_DIR" not in new_text:
+        rel_pattern = re.compile(
+            r"^(PERSONA_MEMORY_DB=)(['\"]?)/[^'\"\n]+/(\.persona-memory/[^'\"\n]+\.db)(['\"]?)$",
+            re.MULTILINE,
+        )
+        if rel_pattern.search(new_text):
+            new_text = rel_pattern.sub(r"\1\2${CLAUDE_PROJECT_DIR}/\3\4", new_text)
+            relative_migrated = True
+
+    # (b) `.db` (旧 SQLite path) → `.cozo.db`
+    cozo_pattern = re.compile(
+        r"^(PERSONA_MEMORY_DB=(?:'|\")?[^'\"\n]+?)(?<!\.cozo)(\.db)((?:'|\")?)$",
         re.MULTILINE,
     )
-    if pattern.search(text):
-        new_text = pattern.sub(
-            r"\1${CLAUDE_PROJECT_DIR}/\2", text,
-        )
+    if cozo_pattern.search(new_text):
+        new_text = cozo_pattern.sub(r"\1.cozo\2\3", new_text)
+        cozo_suffix_migrated = True
+
+    if new_text != text:
         config_env.write_text(new_text, encoding="utf-8")
-        return "migrated"
-    return "skipped"
+
+    return {"relative": relative_migrated, "cozo_suffix": cozo_suffix_migrated}
 
 
 def upgrade(cozo_path: Path) -> dict[str, int]:
-    """boot 層 default refresh + config.env 相対パス化.
+    """boot 層 default refresh + config.env in-place migrate.
 
     cozo_path: `<persona>.cozo.db` への絶対 / 相対パス.
     """
     counts = {
         "inserted": 0, "updated": 0, "unchanged": 0, "deprecated": 0,
-        "config_env_migrated": 0,
+        "config_env_relative_migrated": 0,
+        "config_env_cozo_suffix_migrated": 0,
     }
 
     # 1. Cozo boot fact refresh
@@ -180,11 +199,14 @@ def upgrade(cozo_path: Path) -> dict[str, int]:
         elif action == "updated":
             print(f"  updated [{category}/{key}]")
 
-    # 2. config.env 相対パス化
-    cfg_status = _migrate_config_env_to_relative(cozo_path)
-    if cfg_status == "migrated":
-        counts["config_env_migrated"] = 1
+    # 2. config.env in-place migrate (絶対パス → 相対、 `.db` → `.cozo.db`)
+    cfg = _migrate_config_env(cozo_path)
+    if cfg["relative"]:
+        counts["config_env_relative_migrated"] = 1
         print("  migrated config.env to ${CLAUDE_PROJECT_DIR}")
+    if cfg["cozo_suffix"]:
+        counts["config_env_cozo_suffix_migrated"] = 1
+        print("  migrated config.env PERSONA_MEMORY_DB suffix .db → .cozo.db")
 
     return counts
 

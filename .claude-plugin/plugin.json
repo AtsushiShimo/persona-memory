@@ -1,6 +1,6 @@
 {
   "name": "persona-memory",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "description": "Local-first persistent memory for Claude Code agents — per-persona Cozo (HNSW embedding + graph) store with Ollama-driven write LLM (fact extraction + supersedes + discussion-graph nodes) and recall LLM (keyword-intercept + vector + FTS + graph). Survives /clear and session restarts.",
   "author": {
     "name": "persona-memory contributors"

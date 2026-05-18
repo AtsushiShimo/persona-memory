@@ -21,7 +21,7 @@
 
 ---
 
-## 2. 現在の状態 (2026-05-17, version 0.7.6)
+## 2. 現在の状態 (2026-05-18, version 0.8.3)
 
 ### 動く機能
 
@@ -29,28 +29,28 @@
 |---|---|---|
 | **raw save** | UserPromptSubmit / Stop で全発話を episodes に同期保存 | `hooks/hooks.json`, `scripts/hooks/on_user_prompt.py` |
 | **write LLM** | 発話 → heavy LLM (gemma3:12b) が fact 抽出 → DB に supersede / insert | `scripts/write/run.py`, `extract.py` |
-| **recall** | UserPromptSubmit で発話全文を embed → vec0 cosine 検索 → summarize LLM が curate → additionalContext で main agent に注入 | `scripts/recall/run.py`, `search.py`, `summarize.py` |
+| **recall** | UserPromptSubmit で発話全文を embed → Cozo HNSW + FTS5 検索 → summarize LLM が curate → additionalContext で main agent に注入 | `scripts/db_cozo/recall_full.py`, `scripts/recall/{extract,search,summarize}.py` |
 | **lint** | write 完了後の tail で新 fact 近傍を judge LLM (heavy) で矛盾検査 → auto_resolve / flag | `scripts/lint/run.py` |
 | **boot 層** | SessionStart で persona / rule の active facts を全件注入 (playbook_* は除外) | `scripts/boot/inject.py`, `defaults.py` |
 | **エスカレーション** | 長文 / 不確実 / 高 importance で claude -p 子プロセスに丸投げ | `scripts/escalate/claude_p.py` |
 | **機密フィルタ** | 両 hook 入口で API キー等を検出して block | `scripts/secrets/detect.py` |
 | **デバッグモード** | `PERSONA_MEMORY_DEBUG=c` で recall パイプラインを全段ログ | `scripts/debug/recall_log.py` |
 | **health check** | DB / 設定 / Ollama / 直近 ingest 健全性を 1 関数で集計 | `scripts/health.py` |
-| **未処理 episode 再抽出** | SessionStart で write が詰まった episode を再開 | `scripts/resume.py` |
-| **lint の recall 接続** | source='lint_conflict' な supersede の旧 value を「過去には〜と言っていたが撤回済」 として補足表示 | `scripts/recall/search.py`, `summarize.py` |
-| **playbook (条件付きノウハウ)** | category=persona + key prefix `playbook_*`. SessionStart 注入除外、 dynamic recall でベクター hit | `scripts/write/extract.py`, `boot/inject.py`, `recall/search.py` |
-| **立ち位置 5 軸** | init 時 + 後付けで `persona/stance` に自然語形式で記録 | `scripts/seed_persona.py`, `add_stance.py` |
+| **未処理 episode 再抽出** | SessionStart で write が詰まった episode を再開 | `scripts/hooks/on_session_start.py` (0.8.0 で `scripts/resume.py` から移管) |
+| **lint の recall 接続** | source='lint_conflict' な supersede の旧 value を「過去には〜と言っていたが撤回済」 として補足表示 | `scripts/db_cozo/recall_full.py`, `scripts/recall/summarize.py` |
+| **playbook (条件付きノウハウ)** | category=persona + key prefix `playbook_*`. SessionStart 注入除外、 dynamic recall でベクター hit | `scripts/write/extract.py`, `scripts/boot/inject.py`, `scripts/db_cozo/recall_full.py` |
+| **立ち位置 5 軸** | init 時 + 後付けで `persona/stance` に自然語形式で記録 | `scripts/seed_persona.py` (0.8.0 で `add_stance.py` は削除. 後付けは MCP `write_fact` 経由) |
 | **MCP search_memory 条件付き許可** | 自動 recall で物足りない時のみ main agent が意図的に呼んで補強検索 | `boot/defaults.py` の `persona/explicit_recall_via_mcp` |
 | **外部ナレッジ保存** | web 調査 (WebFetch / web-page-reader / x-post-reader) 結果を構造化して category=`knowledge` で保存。 同 URL 再調査で上書き、 別 URL は並存 | `server/main.py:save_knowledge`, `boot/defaults.py:playbook_after_web_research` |
 | **MCP server inline 登録 (0.6.8)** | plugin.json の mcpServers から `scripts/run_mcp_server.sh` を起動。 marketplace install でも MCP が露出する | `.claude-plugin/plugin.json`, `scripts/run_mcp_server.sh` |
 | **DB locked 対策 (0.6.9-10)** | write/lint の LLM 呼び出し中は conn を touch せず、 Phase A read → B LLM → C write の順に再配置。 busy_timeout 30s + foreign_keys は last-resort safety net | `scripts/write/run.py`, `scripts/lint/run.py`, `server/db.py` |
-| **session 混線 fix (0.6.11)** | write/recall の fetch_buffer に session_id 絞り。 並行 session の発話が文脈混入しない (検索本体は session 横断) | `scripts/write/run.py`, `scripts/recall/run.py`, `scripts/hooks/on_user_prompt.py` |
-| **想起トリガー学習 (0.6.12, 0.6.15)** | 過去参照表現を含む発話の (query_embedding, hit fact/episode ids) を `recall_triggers` に蓄積し、 類似 query に対し過去 hit を boost する **パーソナライズド recall**。 agentmemory の RRF を超える差別化軸 | `scripts/recall/triggers.py`, `scripts/recall/extract.py`, `scripts/recall/run.py` |
-| **議論グラフ (0.6.13, 0.6.17)** | `discussion_nodes` / `discussion_edges` で論点 / 検討案 / 採用判断 / 撤回を DAG として構造化。 write LLM が同一呼び出しで facts + nodes を抽出 (追加 LLM コール 0). 状態 (proposed/accepted/rejected/superseded/observed) で「忘れない」 を担保 | `scripts/discussion/graph.py`, `scripts/write/extract.py`, `scripts/write/run.py` |
-| **反事実記憶 (0.6.14, 0.6.16)** | `facts.reason_superseded` 列に撤回理由を保存。 write LLM が `reason` フィールドで抽出し、 recall で「『旧』 と言っていたが『理由』 のため撤回済」 を summarize prompt に提示 | `scripts/write/extract.py`, `scripts/write/persist.py`, `scripts/recall/search.py`, `scripts/recall/summarize.py` |
-| **議論ノード embedding + recall 統合 (0.6.18 Phase B)** | discussion_nodes に title+content の embedding を付与し、 recall パイプラインで query_emb 最近傍ノードを「## 直近の議論」 として additionalContext 冒頭に prefix. 「直近どこで議論が止まっていたか」 系の query に末端ノード即答 (edges 非依存). | `scripts/discussion/graph.py:nearest_discussion_nodes`, `scripts/recall/run.py`, `scripts/write/run.py` |
-| **遡及抽出 (0.6.18-20)** | 0.6.17 以前 ingest 済の episode を write LLM で再抽出し discussion_nodes を救済 (facts は無変更). **`/persona-memory:backfill-discussion` で明示実行**. 0.6.20 で軽量モデル default (gemma3:4b ~3-6s/件) + 短文 user 発話の事前 skip (PERSONA_BACKFILL_USER_SKIP_CHARS=50) で 1993 件の dev DB が 8-16h → 1-2h に短縮. 件数 + 推定時間, 進捗 stderr, Ctrl+C 中断耐性, `--limit N` で分割実行可 | `scripts/discussion/backfill.py`, `commands/backfill-discussion.md` |
-| **MCP write_fact 回帰修正 (0.6.18)** | `server/db.upsert_fact` の `ON CONFLICT(category, key)` が partial unique index と一致せず `OperationalError` で落ちていた回帰を `WHERE status = 'active'` 付き conflict target で修正 | `server/db.py`, `tests/test_db_schema.py:test_upsert_fact_via_server_db` |
+| **session 混線 fix (0.6.11)** | write の fetch_buffer に session_id 絞り。 並行 session の発話が文脈混入しない (検索本体は session 横断) | `scripts/write/run.py`, `scripts/hooks/on_user_prompt.py` |
+| **想起トリガー学習 (0.6.12, 0.6.15)** | 過去参照表現を含む発話の (query_embedding, hit fact/episode ids) を `recall_triggers` に蓄積し、 類似 query に対し過去 hit を boost する **パーソナライズド recall**。 agentmemory の RRF を超える差別化軸 | `scripts/db_cozo/recall_full.py`, `scripts/recall/extract.py` |
+| **議論グラフ (0.6.13, 0.6.17)** | `discussion_nodes` / `discussion_edges` で論点 / 検討案 / 採用判断 / 撤回を DAG として構造化。 write LLM が同一呼び出しで facts + nodes を抽出 (追加 LLM コール 0). 状態 (proposed/accepted/rejected/superseded/observed) で「忘れない」 を担保 | `scripts/db_cozo/discussion.py`, `scripts/discussion/graph.py` (定数のみ), `scripts/write/extract.py`, `scripts/write/run.py` |
+| **反事実記憶 (0.6.14, 0.6.16)** | `fact.reason_superseded` 列に撤回理由を保存。 write LLM が `reason` フィールドで抽出し、 recall で「『旧』 と言っていたが『理由』 のため撤回済」 を summarize prompt に提示 | `scripts/write/extract.py`, `scripts/db_cozo/fact_persist.py`, `scripts/db_cozo/recall_full.py`, `scripts/recall/summarize.py` |
+| **議論ノード embedding + recall 統合 (0.6.18 Phase B)** | discussion_nodes に title+content の embedding を付与し、 recall パイプラインで query_emb 最近傍ノードを「## 直近の議論」 として additionalContext 冒頭に prefix. 「直近どこで議論が止まっていたか」 系の query に末端ノード即答 (edges 非依存). | `scripts/db_cozo/discussion.py:nearest_discussion_nodes`, `scripts/db_cozo/recall_full.py`, `scripts/write/run.py` |
+| **遡及抽出 (0.6.18-20)** | 既存 episode を write LLM で再抽出し discussion_nodes を救済 (facts は無変更). **`/persona-memory:backfill-discussion` で明示実行**. 軽量モデル default (gemma3:4b ~3-6s/件) + 短文 user 発話の事前 skip (PERSONA_BACKFILL_USER_SKIP_CHARS=50) で dev DB が 8-16h → 1-2h に短縮. 件数 + 推定時間, 進捗 stderr, Ctrl+C 中断耐性, `--limit N` で分割実行可 | `scripts/db_cozo/backfill_graph.py`, `commands/backfill-discussion.md` |
+| **MCP write_fact 回帰修正 (0.6.18)** | upsert 経路の partial unique 制約問題. 0.8.0 の Cozo only 化で `:put fact{...}` upsert に置き換わり、 構造的に再発不能になった | `server/db.py`, `scripts/db_cozo/fact_persist.py` |
 | **Cross-Session Topic Merge (0.7.1)** | session 跨ぎで同議題なら過去 topic に merge. `topic_shift.find_past_topic_for_merge` + `repo.find_similar_topics_by_emb`. shift=true 時に「新 topic 発行」 前に過去 topic を vec 候補 + light LLM 判定で探す | `scripts/db_cozo/topic_shift.py`, `scripts/db_cozo/repo.py`, `scripts/db_cozo/backfill_cross_session_topics.py` |
 | **議論グラフの 3D 可視化 (0.7.2)** | on-demand. `/persona-memory:visualize` で discussion_node + edge を 3d-force-graph で可視化. node 色=kind / 透明度=state / edge 色=relation. ブラウザ自動 open | `scripts/db_cozo/visualize.py`, `templates/graph_viewer.html`, `commands/visualize.md` |
 | **init で Cozo DB 初期化 (0.7.3)** | 0.7.0 で Cozo 全面移行と謳いつつ /persona-memory:init が SQLite だけ作る致命的バグを修正. これがないと新規ペルソナで Cross-Session Merge / 議論グラフ / topic shift / recall_full / visualize 全部 bypass | `commands/init.md` (step 4.5) |
@@ -255,38 +255,44 @@ RRF + Ebbinghaus 減衰 + 自動忘却) との差別化軸として 7 案を整�
 
 ---
 
-## 8. ディレクトリ構成
+## 8. ディレクトリ構成 (0.8.3 時点)
 
 ```
 persona-memory/
-├── .claude-plugin/plugin.json       # plugin manifest (version はここ)
+├── .claude-plugin/plugin.json        # plugin manifest (version はここ)
 ├── .claude/hooks/                    # hook entry shell scripts
 ├── CLAUDE.md                         # プロジェクト指示書 (ペルソナ親エージェント向け)
 ├── HANDOFF.md                        # このファイル
-├── commands/                         # slash command 定義 (init / health / etc.)
+├── commands/                         # slash command 定義
 ├── hooks/hooks.json                  # hook 登録 (UserPromptSubmit / Stop / etc.)
 ├── scripts/
-│   ├── db/                           # schema / migrate / connection
+│   ├── db_cozo/                      # Cozo backend (connection / repo / fact_persist /
+│   │                                 #   recall_full / discussion / lint / wire / etc.)
 │   ├── boot/                         # boot 層注入 + DEFAULT_BOOT_FACTS
-│   ├── write/                        # write LLM (extract / persist / similarity / run)
-│   ├── recall/                       # recall (extract / search / summarize / run)
-│   ├── lint/                         # lint LLM (judge_conflict / run)
-│   ├── secrets/                      # 機密フィルタ
+│   ├── write/                        # write LLM (extract / run / similarity 定数のみ)
+│   ├── recall/                       # recall LLM 部品 (extract / search dataclass / summarize)
+│   ├── discussion/graph.py           # 議論グラフ kind / state / edge 定数
+│   ├── lint/run.py                   # lint LLM (judge_conflict) — DB 操作は db_cozo/lint へ
+│   ├── reflection/                   # 反省モード (怒気検知 / lesson trigger 適用)
+│   ├── secrets/                      # シークレット検出 (UserPromptSubmit hook)
 │   ├── escalate/                     # claude -p 子プロセス
 │   ├── hooks/                        # hook Python entry points
-│   ├── shared/                       # ollama / embedding ヘルパ
-│   ├── debug/                        # debug log
-│   ├── tools/                        # recall_replay 等 dev tool
-│   ├── seed_persona.py               # init 時の persona facts seed
-│   ├── add_stance.py                 # 既存 DB への stance 追加 (未設定時のみ)
-│   ├── upgrade.py                    # boot 層 default refresh + migration
+│   ├── shared/                       # env / ollama / embedding ヘルパ
+│   ├── debug/                        # debug log + 発話ベース debug mode
+│   ├── seed_persona.py               # init 時の persona facts seed (Cozo に直接 upsert)
+│   ├── upgrade.py                    # boot 層 default refresh + config.env in-place migrate
 │   └── health.py                     # 包括 health check
 ├── server/main.py                    # MCP server (FastMCP)
-├── tests/                            # 230+ unit tests
-└── setup.sh                          # venv + Ollama モデル + DB init
+├── tests/                            # 240+ unit tests + e2e (Cozo only)
+└── setup.sh                          # venv (httpx + pycozo + cozo-embedded) + Ollama
 ```
 
-主要モジュールの責務は冒頭 docstring を読むこと。
+主要モジュールの責務は冒頭 docstring を読むこと。 0.8.0/0.8.2/0.8.3 で SQLite
+関連ファイル (`scripts/db/`, `scripts/topic/`, `scripts/auto_persist.py`,
+`proxy_recall.py`, `init-memory.py`, `recall/run.py`, `recall/triggers.py`,
+`recall/format.py`, `write/persist.py`, `discussion/backfill.py`,
+`migrate_from_sqlite.py`, `db/schema.sql`, `tests/test_e2e.py`,
+`tests/test_compression.py`) は物理削除済み.
 
 ---
 
@@ -1284,4 +1290,67 @@ AI には phased migration / 段階リリース / 並走期 / バックアップ
 
 ---
 
-最終更新: 2026-05-18 (version 0.8.0)
+## 19. 0.8.0 後の cleanup 連鎖 (0.8.1 / 0.8.2 / 0.8.3, 2026-05-18)
+
+0.8.0 で「業務フロー削除」 と「dead code 残置」 を分離した判断自体が
+`playbook_no_unjustified_phase_split` lesson に抵触しており、 3 リリースに
+わたって追従清算した. **教訓: 「メジャーで完全廃止」 と一回宣言したら、
+そのリリース内で物理削除 + description / 周辺コマンド / config 形式まで
+1 つの commit で完遂すること**.
+
+### 19.1 0.8.1 — dead code 物理削除 + plugin.json description 整理
+
+0.8.0 で「業務フローからは到達不能だが db_cozo が import している」 と
+正当化して残した模様コードを物理削除. db_cozo から import される **純ロジック
+のみ** を残した:
+
+- 削除: `scripts/init-memory.py`, `proxy_recall.py`, `recall/{run,triggers,format}.py`,
+  `write/persist.py`, `discussion/backfill.py`, `db/schema.sql`,
+  `tests/{test_compression,test_e2e}.py`
+- 縮減: `recall/search.py` (RecalledFact/Episode dataclass のみ),
+  `write/similarity.py` (EMBED_DISTANCE_MAX + 属性判定 + reinforcement のみ),
+  `discussion/graph.py` (VALID_KINDS/STATES/EDGE_KINDS 定数のみ)
+- plugin.json: `"per-persona SQLite + sqlite-vec store"` → Cozo (HNSW + graph),
+  keywords sqlite → cozo, version 0.8.0 → 0.8.1
+- README: モデル表 / プライバシ / ファイル構成を Cozo only 構造に追従
+
+差分: +42 / -2798 (commit `db2a70e`).
+
+### 19.2 0.8.2 — SQLite migrate 経路を完全廃止
+
+「(1) ユーザーデータの後方互換 migrate は例外」 という lesson の例外条項を
+機械的に当てはめて残した `migrate_from_sqlite` 経路を撲滅. 実際は migrate
+対象 (= SQLite-only ペルソナ) が既に全員 Cozo 化済みで、 残置は drift だった.
+
+- 削除: `scripts/db_cozo/migrate_from_sqlite.py` (427 行), `commands/upgrade-cozo.md`
+- `scripts/upgrade.py`: `_migrate_legacy_sqlite_to_cozo` 削除, boot refresh +
+  config.env 相対パス化のみに縮減
+- 4 コマンド (`upgrade`, `backfill-cross-session-topics`, `visualize`,
+  `seed-lessons`) のエラー文言で `/persona-memory:upgrade-cozo` を
+  `/persona-memory:init` に差し替え
+- `wire.py` / `fact_persist.py` / `demo_recall.py` の SQLite docstring drift 解消
+
+差分: +63 / -599 (commit `f597851`).
+
+### 19.3 0.8.3 — env path を `.cozo.db` 直接化 + setup 依存掃除
+
+最後の地雷だった「`PERSONA_MEMORY_DB` env が `.db` (SQLite path) を指す + 物理
+ファイル存在チェック」 を撲滅. ご主人様が `.db` を `rm` した瞬間に
+`get_db_path()` が None を返して hook が壊れる地雷だった.
+
+- `scripts/init.sh`, `scripts/new-persona.sh`: 生成する config.env の
+  `PERSONA_MEMORY_DB` テンプレを `.db` → `.cozo.db` 直接に
+- `scripts/load_persona_env.sh`: fallback の DB 解決を `.cozo.db` に, 旧
+  proxy_recall / sqlite 言及を一掃
+- `scripts/shared/env.py:get_db_path()`: 旧 `.db` env を受けたら自動で
+  `.cozo.db` に振り直す path-only 救済を内蔵
+- `scripts/db_cozo/wire.py:cozo_db_path_for()`: 冪等化 (既に `.cozo.db` で
+  終わるパスは no-op).
+- `scripts/upgrade.py:_migrate_config_env()`: 旧 config.env を in-place で
+  (a) 絶対パス → 相対 (b) `.db` suffix → `.cozo.db` に migrate
+- `setup.sh`: `pip install` から `sqlite-vec` を削除 (runtime 未使用)
+- README + HANDOFF: 0.8.3 状態に追従
+
+---
+
+最終更新: 2026-05-18 (version 0.8.3)
