@@ -18,10 +18,9 @@ def get_db_path() -> Path | None:
     raw = os.environ.get("PERSONA_MEMORY_DB", "").strip()
     if not raw:
         return None
-    p = Path(raw)
-    # 旧 SQLite path を受けたら `.cozo.db` に振り直す.
-    if p.suffix == ".db" and not p.name.endswith(".cozo.db"):
-        p = p.with_suffix(".cozo.db")
+    # 旧 SQLite path を受けたら `.cozo.db` に振り直す (冪等).
+    from scripts.db_cozo.wire import cozo_db_path_for
+    p = cozo_db_path_for(Path(raw))
     if not p.exists():
         return None
     return p

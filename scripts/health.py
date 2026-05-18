@@ -22,7 +22,8 @@ SCHEMA_VERSION = "cozo-1"
 
 def _check_db(db_path: Path) -> dict[str, Any]:
     """Cozo DB の存在 + 統計."""
-    cozo_path = db_path.with_suffix(".cozo.db")
+    from scripts.db_cozo.wire import cozo_db_path_for
+    cozo_path = cozo_db_path_for(db_path)
     out: dict[str, Any] = {"path": str(cozo_path)}
     if not cozo_path.exists():
         return {**out, "ok": False, "error": "Cozo DB が存在しない"}

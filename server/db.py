@@ -38,8 +38,9 @@ def db_path() -> Path:
 
 
 def _cozo_path() -> Path:
-    """`<persona>.db` → `<persona>.cozo.db`."""
-    return db_path().with_suffix(".cozo.db")
+    """`<persona>.db` → `<persona>.cozo.db`. 既に `.cozo.db` ならそのまま."""
+    from scripts.db_cozo.wire import cozo_db_path_for
+    return cozo_db_path_for(db_path())
 
 
 def _cozo_client():

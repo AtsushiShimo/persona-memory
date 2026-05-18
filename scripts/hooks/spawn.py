@@ -84,8 +84,9 @@ def spawn_cozo_topic_summary_backfill(db_path) -> None:
         return
     # Cozo DB 存在チェック (旧 SQLite のみのユーザーには起動しない)
     from pathlib import Path
-    sqlite_db = Path(db_path)
-    cozo_db = sqlite_db.with_suffix(".cozo.db")
+
+    from scripts.db_cozo.wire import cozo_db_path_for
+    cozo_db = cozo_db_path_for(Path(db_path))
     if not cozo_db.exists():
         return
     try:
@@ -119,12 +120,14 @@ def spawn_cozo_graph_backfill(db_path) -> None:
     if db_path is None:
         return
     from pathlib import Path
-    sqlite_db = Path(db_path)
-    cozo_db = sqlite_db.with_suffix(".cozo.db")
+
+    from scripts.db_cozo.wire import cozo_db_path_for
+    cozo_db = cozo_db_path_for(Path(db_path))
     if not cozo_db.exists():
         return
-    # 多重起動防止 lockfile (PID を書き込んで存在チェック)
-    lock = cozo_db.with_suffix(".cozo.db.backfill.lock")
+    # 多重起動防止 lockfile (PID を書き込んで存在チェック).
+    # 直接文字列連結 (with_suffix だと `.db` 部分が置換され `.cozo.backfill.lock` になる).
+    lock = cozo_db.parent / f"{cozo_db.name}.backfill.lock"
     if lock.exists():
         try:
             pid_str = lock.read_text().strip()

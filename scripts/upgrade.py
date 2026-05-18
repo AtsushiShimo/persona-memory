@@ -228,8 +228,8 @@ def main() -> None:
     # 旧 SQLite path (`<persona>.db`) を受けても `.cozo.db` に振り直す.
     # 0.8.2 で SQLite 経路を廃止したため、 caller がまだ旧 path を渡してきた
     # 場合の救済 (path-only 救済 = 実 SQLite ファイルからは読まない).
-    if db_path.suffix == ".db" and not db_path.name.endswith(".cozo.db"):
-        db_path = db_path.with_suffix(".cozo.db")
+    from scripts.db_cozo.wire import cozo_db_path_for
+    db_path = cozo_db_path_for(db_path)
 
     if not db_path.exists():
         print(f"ERROR: Cozo DB not found: {db_path}", file=sys.stderr)

@@ -244,10 +244,10 @@ def main() -> int:
         sys.stderr.write("PERSONA_MEMORY_DB 未設定\n")
         return 1
     from pathlib import Path
-    p = Path(db)
-    # 旧 SQLite path (`<persona>.db`) を受けても `.cozo.db` に振り直す.
-    if p.suffix == ".db" and not p.name.endswith(".cozo.db"):
-        p = p.with_suffix(".cozo.db")
+
+    from scripts.db_cozo.wire import cozo_db_path_for
+    # 旧 SQLite path (`<persona>.db`) を受けても `.cozo.db` に振り直す (冪等).
+    p = cozo_db_path_for(Path(db))
     if not p.exists():
         sys.stderr.write(
             f"Cozo DB が見つかりません ({p}). "

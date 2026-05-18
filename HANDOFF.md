@@ -1351,6 +1351,34 @@ AI には phased migration / 段階リリース / 並走期 / バックアップ
 - `setup.sh`: `pip install` から `sqlite-vec` を削除 (runtime 未使用)
 - README + HANDOFF: 0.8.3 状態に追従
 
+### 19.4 0.8.4 — `.cozo.db` 二重 suffix バグ全撲滅 (design drift 解消)
+
+0.8.3 で env テンプレを `.cozo.db` 直接化した際、 `Path.with_suffix(".cozo.db")`
+を素で呼ぶ callsite を冪等版 `cozo_db_path_for()` への置換し損ねていた.
+結果、 `Path("p.cozo.db").with_suffix(".cozo.db")` → `Path("p.cozo.cozo.db")`
+という二重 suffix が `health_check` / `MCP server _cozo_path()` / hook spawn
+経路で静かに発症 (health が「DB 不在」 と誤報、 backfill lock が
+`.cozo.cozo.db.backfill.lock` の orphan を残す等).
+
+- `server/db.py:_cozo_path()`, `scripts/health.py:_check_db()`,
+  `scripts/upgrade.py:main()`, `scripts/shared/env.py:get_db_path()`,
+  `scripts/hooks/spawn.py:spawn_cozo_topic_summary_backfill()`,
+  `scripts/hooks/spawn.py:spawn_cozo_graph_backfill()`,
+  `scripts/reflection/seed_past_lessons.py:main()` の **計 7 callsite** を
+  全て `scripts/db_cozo/wire.py:cozo_db_path_for()` 経由に統一
+- `spawn_cozo_graph_backfill()` の lock ファイル名生成も
+  `cozo_db.with_suffix(".cozo.db.backfill.lock")` (= `.db` 部分のみ置換で
+  `p.cozo.cozo.db.backfill.lock` を生成していた) を文字列連結
+  `f"{cozo_db.name}.backfill.lock"` に修正
+- `tests/test_cozo_db_path_no_double_suffix.py` を追加 (9 ケース):
+  - 静的: `scripts/` `server/` 配下で素の `.with_suffix(".cozo.db")` を
+    `wire.py` 以外で使ったら fail (再発防止 lint)
+  - 動的: 7 callsite 全てを新 env 形式 (`.cozo.db` 直接) と旧形式
+    (`.db` SQLite) の両方で網羅
+- 既存の e2e (`test_e2e_cozo_only_080.py`) は旧 env 形式 (`.db`) のみで
+  fixture を組んでいたため新形式の二重 suffix バグを検出できていなかった
+  (= テストギャップ)
+
 ---
 
-最終更新: 2026-05-18 (version 0.8.3)
+最終更新: 2026-05-18 (version 0.8.4)
