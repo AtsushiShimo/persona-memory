@@ -1,7 +1,9 @@
-"""embedding ベクトルの sqlite-vec 用 BLOB pack/unpack + 入力テキスト前処理."""
-from __future__ import annotations
+"""embedding 投入前のテキスト前処理 (Ollama の context 窓対策).
 
-import struct
+旧 sqlite-vec 時代の `pack` / `unpack` (bytes 詰め直し) は 0.8.6 で削除.
+Cozo は list[float] を直接受け付けるため bytes 経由は不要になった.
+"""
+from __future__ import annotations
 
 # nomic-embed-text のコンテキスト窓 (~2048 token) を超えると Ollama が
 # 500 を返す。 日本語は 1 文字 ≒ 1-1.5 token のため、 3000 文字で切ると
@@ -22,12 +24,3 @@ def truncate_for_embedding(text: str, max_chars: int = EMBED_TEXT_MAX_CHARS) -> 
     if len(text) <= max_chars:
         return text
     return text[:max_chars]
-
-
-def pack(vec: list[float]) -> bytes:
-    return struct.pack(f"{len(vec)}f", *vec)
-
-
-def unpack(blob: bytes) -> list[float]:
-    n = len(blob) // 4
-    return list(struct.unpack(f"{n}f", blob))

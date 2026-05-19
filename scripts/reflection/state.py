@@ -16,19 +16,16 @@ state schema (key/value 形式):
   `set_anger_detection` から切替). 未設定時は有効扱い (= default on).
   env 変数による切替は廃止 (並走負債を作らないため DB 一元管理).
 
-env:
-- PERSONA_REFLECTION_MAX_TURNS (default 20): 解除されないまま N ターン続いたら
-  強制 auto-clear (= 無限ループ防止セーフティネット)
+0.8.6 改修: 「N ターン経過で強制 auto-clear」 経路は廃止. 解除はご主人様の
+承認 (= lesson 保存 + trigger 登録成功) か、 slash command の明示実行のみ.
+議論されていない自動解除は仕様の歪みになるため.
 """
 from __future__ import annotations
 
 import datetime as dt
-import os
 from dataclasses import dataclass
 
 from pycozo.client import Client
-
-MAX_TURNS = int(os.environ.get("PERSONA_REFLECTION_MAX_TURNS", "20"))
 
 
 def _now() -> str:
@@ -118,12 +115,6 @@ def increment_turn(client: Client) -> int:
 def clear(client: Client) -> None:
     """反省モード解除. 警告なし."""
     _rm_all(client)
-
-
-def should_force_clear(client: Client) -> bool:
-    """N ターン経過していたら強制 auto-clear すべき (セーフティネット)."""
-    cur = get_state(client)
-    return cur.active and cur.turn_count >= MAX_TURNS
 
 
 # ── 怒気検知の動的 on/off (0.8.5) ──

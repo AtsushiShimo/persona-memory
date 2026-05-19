@@ -5,14 +5,13 @@ server/db.py が全機能 Cozo backend で動くこと, hook 経路が SQLite �
 """
 from __future__ import annotations
 
-import struct
 from pathlib import Path
 
 import pytest
 
 
-def _dummy_emb() -> bytes:
-    return struct.pack(f"{768}f", *([0.1] * 768))
+def _dummy_emb() -> list[float]:
+    return [0.1] * 768
 
 
 @pytest.fixture
@@ -21,14 +20,14 @@ def fresh_persona(tmp_path: Path, monkeypatch):
     pdir = tmp_path / ".persona-memory"
     pdir.mkdir()
     (pdir / "active-persona").write_text("t", encoding="utf-8")
-    sqlite_path = pdir / "t.db"
-    sqlite_path.touch()
+    db_path = pdir / "t.db"
+    db_path.touch()
     cozo_path = pdir / "t.cozo.db"
     from scripts.db_cozo.connection import init_db
     init_db(cozo_path)
-    monkeypatch.setenv("PERSONA_MEMORY_DB", str(sqlite_path))
+    monkeypatch.setenv("PERSONA_MEMORY_DB", str(db_path))
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
-    return {"sqlite": sqlite_path, "cozo": cozo_path}
+    return {"db": db_path, "cozo": cozo_path}
 
 
 def test_server_db_upsert_search_delete_cycle(fresh_persona):
@@ -42,7 +41,7 @@ def test_server_db_upsert_search_delete_cycle(fresh_persona):
     db.write_fact_embedding(fid, _dummy_emb())
     # search で見つかる
     results = db.search_facts(
-        embedding_blob=_dummy_emb(), top_k=5, category=None,
+        embedding=_dummy_emb(), top_k=5, category=None,
     )
     assert any(r["id"] == fid and r["value"] == "深煎り" for r in results)
     # list_active_facts に出る
@@ -76,7 +75,7 @@ def test_append_episode_and_search(fresh_persona):
     )
     assert eid > 0
     db.write_episode_embedding(eid, _dummy_emb())
-    results = db.search_episodes(embedding_blob=_dummy_emb(), top_k=5)
+    results = db.search_episodes(embedding=_dummy_emb(), top_k=5)
     assert any(r["id"] == eid for r in results)
 
 
@@ -110,8 +109,8 @@ def test_hook_user_prompt_runs_without_sqlite(fresh_persona):
         "PERSONA_TOPIC_DISABLE": "1",
         "PERSONA_RECALL_DISABLE": "1",
         "PERSONA_WRITE_DISABLE": "1",
-        "PERSONA_MEMORY_DB": str(fresh_persona["sqlite"]),
-        "CLAUDE_PROJECT_DIR": str(fresh_persona["sqlite"].parent.parent),
+        "PERSONA_MEMORY_DB": str(fresh_persona["db"]),
+        "CLAUDE_PROJECT_DIR": str(fresh_persona["db"].parent.parent),
     }
     payload = json.dumps({"prompt": "おはよう", "session_id": "s_e2e"})
     proc = subprocess.run(
@@ -151,16 +150,16 @@ def test_lesson_register_and_match_through_mcp_path(fresh_persona):
 def test_debug_mode_toggle_via_mcp_path(fresh_persona):
     """set_debug_mode tool 経路で flag が立つ + hook が読める."""
     from scripts.debug.mode import enable, is_active, disable
-    enable(fresh_persona["sqlite"], ttl_seconds=60, reason="test")
-    assert is_active(fresh_persona["sqlite"]) is True
-    disable(fresh_persona["sqlite"])
-    assert is_active(fresh_persona["sqlite"]) is False
+    enable(fresh_persona["db"], ttl_seconds=60, reason="test")
+    assert is_active(fresh_persona["db"]) is True
+    disable(fresh_persona["db"])
+    assert is_active(fresh_persona["db"]) is False
 
 
 def test_health_check_returns_cozo_db_info(fresh_persona):
     """health.collect が Cozo path を見て ok を返す."""
     from scripts.health import collect
-    result = collect(fresh_persona["sqlite"])
+    result = collect(fresh_persona["db"])
     assert isinstance(result, dict)
     assert "db" in result
     assert result["db"]["ok"] is True

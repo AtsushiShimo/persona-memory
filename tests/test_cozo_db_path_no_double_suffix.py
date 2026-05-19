@@ -70,11 +70,11 @@ def test_server_db_cozo_path_legacy_sqlite_style(tmp_path, monkeypatch):
     """旧形式: PERSONA_MEMORY_DB=<persona>.db でも `.cozo.db` に解決される (後方互換)."""
     pdir = tmp_path / ".persona-memory"
     pdir.mkdir()
-    sqlite_path = pdir / "t.db"
-    sqlite_path.touch()
+    db_path = pdir / "t.db"
+    db_path.touch()
     cozo_path = pdir / "t.cozo.db"
     cozo_path.touch()
-    monkeypatch.setenv("PERSONA_MEMORY_DB", str(sqlite_path))
+    monkeypatch.setenv("PERSONA_MEMORY_DB", str(db_path))
 
     from server import db
     resolved = db._cozo_path()
@@ -102,12 +102,12 @@ def test_health_check_db_legacy_sqlite_style(tmp_path):
     from scripts.db_cozo.connection import init_db
     from scripts.health import _check_db
 
-    sqlite_path = tmp_path / "t.db"
-    sqlite_path.touch()
+    db_path = tmp_path / "t.db"
+    db_path.touch()
     cozo_path = tmp_path / "t.cozo.db"
     init_db(cozo_path)
 
-    result = _check_db(sqlite_path)
+    result = _check_db(db_path)
     assert result["ok"] is True, f"health が後方互換解決できず: {result}"
 
 
@@ -127,11 +127,11 @@ def test_shared_env_get_db_path_idempotent_for_new_env_style(tmp_path, monkeypat
 
 def test_shared_env_get_db_path_legacy_sqlite_style(tmp_path, monkeypatch):
     """旧形式 env (`<persona>.db`) でも `.cozo.db` に振り直して解決できる."""
-    sqlite_path = tmp_path / "t.db"
-    sqlite_path.touch()
+    db_path = tmp_path / "t.db"
+    db_path.touch()
     cozo_path = tmp_path / "t.cozo.db"
     cozo_path.touch()
-    monkeypatch.setenv("PERSONA_MEMORY_DB", str(sqlite_path))
+    monkeypatch.setenv("PERSONA_MEMORY_DB", str(db_path))
 
     from scripts.shared.env import get_db_path
     result = get_db_path()

@@ -36,19 +36,19 @@ def cozo_disabled() -> bool:
     return os.environ.get("PERSONA_COZO_DISABLE", "").strip() == "1"
 
 
-def maybe_cozo_recall_block(sqlite_db: Path, query: str) -> str:
+def maybe_cozo_recall_block(db_path: Path, query: str) -> str:
     """Cozo DB が存在し disable されていなければ流れ再構築ブロックを返す.
 
     旧来の単発 topic_flow ブロックのみ. recall_full への移行後は
     maybe_cozo_full_recall を使うこと.
     """
-    if cozo_disabled() or not cozo_db_present(sqlite_db):
+    if cozo_disabled() or not cozo_db_present(db_path):
         return ""
     try:
         from scripts.db_cozo.connection import init_db
         from scripts.db_cozo.recall import recall_topic_flow
         from scripts.shared.ollama import OllamaClient
-        client = init_db(cozo_db_path_for(sqlite_db))
+        client = init_db(cozo_db_path_for(db_path))
         llm = OllamaClient()
         emb = llm.embed(
             os.environ.get("PERSONA_EMBED_MODEL", "nomic-embed-text"),
@@ -63,19 +63,19 @@ def maybe_cozo_recall_block(sqlite_db: Path, query: str) -> str:
 
 
 def maybe_cozo_full_recall(
-    sqlite_db: Path, query: str, buffer: list[dict] | None = None,
+    db_path: Path, query: str, buffer: list[dict] | None = None,
 ) -> str:
     """Cozo DB が存在し disable されていなければ recall_full を呼んで全部返す.
 
     旧 SQLite recall を置き換える経路. boot 層の dirty 注入は呼出側で別途.
     """
-    if cozo_disabled() or not cozo_db_present(sqlite_db):
+    if cozo_disabled() or not cozo_db_present(db_path):
         return ""
     try:
         from scripts.db_cozo.connection import init_db
         from scripts.db_cozo.recall_full import recall_full
         from scripts.shared.ollama import OllamaClient
-        client = init_db(cozo_db_path_for(sqlite_db))
+        client = init_db(cozo_db_path_for(db_path))
         return recall_full(client, query, OllamaClient(), buffer=buffer or [])
     except Exception as e:
         sys.stderr.write(f"[persona-memory] cozo full recall failed: {e}\n")
@@ -83,18 +83,18 @@ def maybe_cozo_full_recall(
 
 
 def maybe_cozo_topic_shift(
-    sqlite_db: Path, session_id: str, new_prompt: str,
+    db_path: Path, session_id: str, new_prompt: str,
 ) -> str | None:
     """[DEPRECATED 0.7.3] 旧 topic_shift 経路の互換シム.
 
     0.7.3 で「生きてる話題箱」 方式 (`maybe_cozo_identify_topic`) に統合され
     包摂された. 旧呼び出しを残しつつ新経路に委譲する.
     """
-    return maybe_cozo_identify_topic(sqlite_db, session_id, new_prompt, role="user")
+    return maybe_cozo_identify_topic(db_path, session_id, new_prompt, role="user")
 
 
 def maybe_cozo_identify_topic(
-    sqlite_db: Path,
+    db_path: Path,
     session_id: str,
     content: str,
     role: str = "user",
@@ -110,13 +110,13 @@ def maybe_cozo_identify_topic(
     重さ: embedding 1-2 回 + LLM 1 回 (summary 更新 / 生成). hook 同期で
     呼ぶことを前提に最小限の LLM コール構成.
     """
-    if cozo_disabled() or not cozo_db_present(sqlite_db):
+    if cozo_disabled() or not cozo_db_present(db_path):
         return None
     try:
         from scripts.db_cozo.connection import init_db
         from scripts.db_cozo.topic_identify import identify_topic
         from scripts.shared.ollama import OllamaClient
-        client = init_db(cozo_db_path_for(sqlite_db))
+        client = init_db(cozo_db_path_for(db_path))
         result = identify_topic(
             client, role=role, content=content,
             session_id=session_id, llm=OllamaClient(),
@@ -128,19 +128,19 @@ def maybe_cozo_identify_topic(
 
 
 def maybe_cozo_save_episode(
-    sqlite_db: Path, role: str, content: str, session_id: str,
+    db_path: Path, role: str, content: str, session_id: str,
 ) -> int | None:
     """Cozo 側にも episode を保存. Cozo DB 不在なら no-op.
 
     旧 SQLite 経路は呼出側で実行済みなのでこれは追加保存. 戻り値は
     Cozo 側の episode_id (= SQLite と独立採番).
     """
-    if cozo_disabled() or not cozo_db_present(sqlite_db):
+    if cozo_disabled() or not cozo_db_present(db_path):
         return None
     try:
         from scripts.db_cozo.connection import init_db
         from scripts.db_cozo.repo import save_episode as cozo_save
-        client = init_db(cozo_db_path_for(sqlite_db))
+        client = init_db(cozo_db_path_for(db_path))
         return cozo_save(client, role=role, content=content, session_id=session_id)
     except Exception as e:
         sys.stderr.write(f"[persona-memory] cozo save_episode failed: {e}\n")
@@ -148,7 +148,7 @@ def maybe_cozo_save_episode(
 
 
 def maybe_cozo_extract_graph(
-    sqlite_db: Path,
+    db_path: Path,
     role: str,
     content: str,
     session_id: str,
@@ -172,7 +172,7 @@ def maybe_cozo_extract_graph(
     戻り値: (node_id, edge_kind). LLM 抽出失敗時 or DB 不在時は (None, None).
     fail-open: 例外は飲み込んで (None, None) を返す (本処理 = 発話応答を妨げない).
     """
-    if cozo_disabled() or not cozo_db_present(sqlite_db):
+    if cozo_disabled() or not cozo_db_present(db_path):
         return None, None
     try:
         from scripts.db_cozo.connection import init_db
@@ -188,7 +188,7 @@ def maybe_cozo_extract_graph(
         from scripts.db_cozo.topic_summary import update_summary
         from scripts.shared.embedding import truncate_for_embedding
         from scripts.shared.ollama import OllamaClient
-        client = init_db(cozo_db_path_for(sqlite_db))
+        client = init_db(cozo_db_path_for(db_path))
         llm = OllamaClient()
         topic_id = get_active_topic(client, session_id)
         # assistant 発話側で summary を追記更新 (user 側は hook で同期更新済み).

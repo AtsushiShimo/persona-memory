@@ -202,7 +202,7 @@ async def persist_raw_dump(
     try:
         sample = body[-2000:] if len(body) > 2000 else body
         vec = await embedding.embed_text(sample)
-        db.write_episode_embedding(ep_id, embedding.pack_embedding(vec))
+        db.write_episode_embedding(ep_id, embedding.l2_normalize(vec))
     except Exception:
         pass
 

@@ -19,7 +19,6 @@ from scripts.db_cozo.recall import (
 from scripts.db_cozo.repo import (
     ensure_topic, save_episode, set_active_topic,
 )
-from scripts.shared.embedding import pack
 
 
 @pytest.fixture

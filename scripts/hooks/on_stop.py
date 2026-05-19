@@ -12,11 +12,13 @@ fail-open: 例外 / 未初期化 DB は exit 0 で素通し.
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 from scripts.hooks.spawn import spawn_write
 from scripts.secrets.detect import detect_secrets, warning_message
 from scripts.shared.env import get_db_path, get_session_id_from_payload
+from scripts.shared.ollama import OllamaClient
 from scripts.shared.transcript import read_transcript
 
 
@@ -67,6 +69,8 @@ def main() -> int:
         if not new_msgs:
             return 0
 
+        embed_model = os.environ.get("PERSONA_EMBED_MODEL", "nomic-embed-text")
+        ollama = OllamaClient()
         for msg in new_msgs:
             role = msg.get("role", "")
             content = msg.get("content", "")
@@ -76,10 +80,17 @@ def main() -> int:
             if found:
                 sys.stderr.write(warning_message(found))
                 continue
+            msg_emb: list[float] | None = None
+            try:
+                msg_emb = ollama.embed(embed_model, content) or None
+            except Exception as e:
+                sys.stderr.write(
+                    f"[persona-memory] inline embed (Stop) failed (fallback to async): {e}\n"
+                )
             try:
                 eid = save_episode(
                     client, role=role, content=content,
-                    session_id=session_id,
+                    session_id=session_id, embedding=msg_emb,
                 )
                 saved_ids.append(eid)
             except Exception as e:

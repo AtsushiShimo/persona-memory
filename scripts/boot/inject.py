@@ -1,8 +1,7 @@
-"""boot 層 facts の取得 + 整形 + dirty フラグ管理 (0.8.0 — Cozo 単独経路).
+"""boot 層 facts の取得 + 整形 + dirty フラグ管理 (Cozo 単独経路).
 
-format_boot_facts は Cozo / SQLite 共通の表示ロジックなので残置.
-BOOT_CATEGORIES / DIRTY_META_KEY 定数も他モジュール (= fact_persist) から
-参照されるため維持. SQLite 直接呼び出しは全削除.
+format_boot_facts は表示整形ロジック (純粋関数). BOOT_CATEGORIES /
+DIRTY_META_KEY 定数も他モジュール (= fact_persist) から参照される.
 """
 from __future__ import annotations
 

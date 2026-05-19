@@ -42,7 +42,7 @@ async def main_async() -> None:
         return
     try:
         vec = await embedding.embed_text(summary)
-        db.write_episode_embedding(ep_id, embedding.pack_embedding(vec))
+        db.write_episode_embedding(ep_id, embedding.l2_normalize(vec))
     except Exception:
         pass
 

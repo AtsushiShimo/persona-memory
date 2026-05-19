@@ -162,22 +162,3 @@ def spawn_cozo_graph_backfill(db_path) -> None:
         pass
 
 
-def spawn_prewarm() -> None:
-    """SessionStart で Ollama heavy + embed モデルを background で warm-up.
-
-    PERSONA_PREWARM_DISABLE=1 でテスト / opt-out.
-    fail-open: ollama 未起動などは静かに諦める (子プロセス側で吸収).
-    """
-    if os.environ.get("PERSONA_PREWARM_DISABLE") == "1":
-        return
-    try:
-        subprocess.Popen(
-            [sys.executable, "-m", "scripts.shared.prewarm"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            close_fds=True,
-        )
-    except Exception:
-        pass

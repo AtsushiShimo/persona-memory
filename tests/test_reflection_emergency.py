@@ -21,11 +21,11 @@ def fresh_db(tmp_path: Path):
     persona_dir = tmp_path / ".persona-memory"
     persona_dir.mkdir()
     (persona_dir / "active-persona").write_text("test", encoding="utf-8")
-    sqlite_path = persona_dir / "test.db"
+    db_path = persona_dir / "test.db"
     cozo_path = persona_dir / "test.cozo.db"
-    sqlite_path.touch()
+    db_path.touch()
     init_db(cozo_path)
-    return {"sqlite": sqlite_path, "cozo": cozo_path, "root": tmp_path}
+    return {"db": db_path, "cozo": cozo_path, "root": tmp_path}
 
 
 def _run_emergency(db_path: Path, action: str) -> dict:
@@ -39,7 +39,7 @@ def _run_emergency(db_path: Path, action: str) -> dict:
 
 
 def test_emergency_off_disables_detection(fresh_db):
-    out = _run_emergency(fresh_db["sqlite"], "off")
+    out = _run_emergency(fresh_db["db"], "off")
     assert out["ok"] is True
     assert out["detection_enabled"] is False
     client = init_db(fresh_db["cozo"])
@@ -49,7 +49,7 @@ def test_emergency_off_disables_detection(fresh_db):
 def test_emergency_off_clears_active_state(fresh_db):
     client = init_db(fresh_db["cozo"])
     enter(client, episode_id=1, anger_phrase="x")
-    out = _run_emergency(fresh_db["sqlite"], "off")
+    out = _run_emergency(fresh_db["db"], "off")
     assert out["reflection_state_cleared"] is True
     # 反省 state は解除されている
     from scripts.reflection.state import get_state
@@ -57,8 +57,8 @@ def test_emergency_off_clears_active_state(fresh_db):
 
 
 def test_emergency_on_reenables(fresh_db):
-    _run_emergency(fresh_db["sqlite"], "off")
-    out = _run_emergency(fresh_db["sqlite"], "on")
+    _run_emergency(fresh_db["db"], "off")
+    out = _run_emergency(fresh_db["db"], "on")
     assert out["ok"] is True
     assert out["detection_enabled"] is True
     client = init_db(fresh_db["cozo"])
@@ -68,14 +68,14 @@ def test_emergency_on_reenables(fresh_db):
 def test_emergency_status_reflects_current(fresh_db):
     client = init_db(fresh_db["cozo"])
     set_detection_enabled(client, False)
-    out = _run_emergency(fresh_db["sqlite"], "status")
+    out = _run_emergency(fresh_db["db"], "status")
     assert out["detection_enabled"] is False
     assert out["reflection_active"] is False
 
 
 def test_mcp_set_anger_detection_off_path(fresh_db, monkeypatch):
     """MCP tool 経由でも同じ動作 (= 入口 2 種で挙動が一致)."""
-    monkeypatch.setenv("PERSONA_MEMORY_DB", str(fresh_db["sqlite"]))
+    monkeypatch.setenv("PERSONA_MEMORY_DB", str(fresh_db["db"]))
     client = init_db(fresh_db["cozo"])
     enter(client, episode_id=7, anger_phrase="y")
     # MCP tool 本体は FastMCP wrapper. wrapper 越しではなく中身を呼ぶ.
@@ -91,7 +91,7 @@ def test_mcp_set_anger_detection_off_path(fresh_db, monkeypatch):
 
 
 def test_mcp_set_anger_detection_on_path(fresh_db, monkeypatch):
-    monkeypatch.setenv("PERSONA_MEMORY_DB", str(fresh_db["sqlite"]))
+    monkeypatch.setenv("PERSONA_MEMORY_DB", str(fresh_db["db"]))
     from server import main as server_main
     raw = getattr(server_main.set_anger_detection, "fn", server_main.set_anger_detection)
     result = raw(enabled=True)

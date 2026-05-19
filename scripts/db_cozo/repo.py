@@ -26,8 +26,14 @@ def save_episode(
     content: str,
     session_id: str,
     topic_id: str | None = None,
+    embedding: list[float] | None = None,
 ) -> int:
-    """生発話を episode に保存し、 生成された id を返す."""
+    """生発話を episode に保存し、 生成された id を返す.
+
+    embedding を渡せばこの :put で同時に書き込み、 HNSW に null 行を残さない
+    (= search_memory が安定する不変条件). None の場合は後段の write LLM が
+    後追いで埋める旧経路にフォールバック.
+    """
     # topic_id 解決 (PERSONA_TOPIC_DISABLE / continue_topic 互換)
     import os
     if topic_id is None and os.environ.get("PERSONA_TOPIC_DISABLE", "").strip() != "1":
@@ -39,13 +45,30 @@ def save_episode(
 
     eid = next_id(client, "episode")
     ts = _now_ts()
-    if topic_id is not None:
+    has_emb = embedding is not None and len(embedding) > 0
+    if topic_id is not None and has_emb:
+        client.run(
+            "?[id, role, content, session_id, topic_id, timestamp, embedding] <- "
+            "[[$id, $role, $content, $sid, $tid, $ts, $emb]] "
+            ":put episode {id => role, content, session_id, topic_id, timestamp, embedding}",
+            {"id": eid, "role": role, "content": content, "sid": session_id,
+             "tid": topic_id, "ts": ts, "emb": embedding},
+        )
+    elif topic_id is not None:
         client.run(
             "?[id, role, content, session_id, topic_id, timestamp] <- "
             "[[$id, $role, $content, $sid, $tid, $ts]] "
             ":put episode {id => role, content, session_id, topic_id, timestamp}",
             {"id": eid, "role": role, "content": content, "sid": session_id,
              "tid": topic_id, "ts": ts},
+        )
+    elif has_emb:
+        client.run(
+            "?[id, role, content, session_id, timestamp, embedding] <- "
+            "[[$id, $role, $content, $sid, $ts, $emb]] "
+            ":put episode {id => role, content, session_id, timestamp, embedding}",
+            {"id": eid, "role": role, "content": content, "sid": session_id,
+             "ts": ts, "emb": embedding},
         )
     else:
         client.run(

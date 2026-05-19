@@ -7,8 +7,8 @@ import pytest
 
 from scripts.db_cozo.connection import init_db
 from scripts.reflection.state import (
-    MAX_TURNS, clear, enter, get_state, increment_turn,
-    is_detection_enabled, set_detection_enabled, should_force_clear,
+    clear, enter, get_state, increment_turn,
+    is_detection_enabled, set_detection_enabled,
 )
 
 
@@ -63,18 +63,20 @@ def test_clear_resets_state(client):
     assert state.turn_count == 0
 
 
-def test_force_clear_threshold(client, monkeypatch):
+def test_state_stays_active_no_matter_how_many_turns(client):
+    """0.8.6 仕様: 何ターン経っても自動解除はしない. 解除はご主人様の意思のみ."""
     enter(client, episode_id=1, anger_phrase="x")
-    # MAX_TURNS まで増やす
-    from scripts.reflection import state as state_mod
-    for _ in range(state_mod.MAX_TURNS - 1):
+    for _ in range(100):
         increment_turn(client)
-    assert should_force_clear(client) is True
+    assert get_state(client).active is True
+    assert get_state(client).turn_count == 101
 
 
-def test_force_clear_under_threshold(client):
-    enter(client, episode_id=1, anger_phrase="x")
-    assert should_force_clear(client) is False
+def test_should_force_clear_is_removed():
+    """20 ターン強制解除のヘルパは仕様改修で削除されている."""
+    from scripts.reflection import state as state_mod
+    assert not hasattr(state_mod, "should_force_clear")
+    assert not hasattr(state_mod, "MAX_TURNS")
 
 
 def test_detection_enabled_default_true(client):

@@ -1,9 +1,10 @@
 """Cozo embedded への接続ヘルパ.
 
 設計:
-- backend は SQLite (Cozo の sqlite backend = 単一ファイル, トランザクション,
-  簡易 backup). RocksDB は依存重く ARM Mac で build 失敗事例あるため見送り.
-- 1 ペルソナ = 1 .cozo.db ファイル (旧 .db と並ぶ).
+- Cozo の埋め込みバックエンド = SQLite (単一ファイル, トランザクション, 簡易
+  backup 可). RocksDB は依存重く ARM Mac で build 失敗事例あるため見送り.
+  (これは Cozo の内部実装の選択. プラグイン業務フローの SQLite は 0.8.0 で廃止.)
+- 1 ペルソナ = 1 .cozo.db ファイル.
 - relation 定義は idempotent. 既に存在する relation は無視.
 - HNSW index も idempotent (CozoScript の `::hnsw create ...` は重複 create
   でエラーになるため、 introspection で存在確認してから走らせる).
@@ -21,19 +22,16 @@ SCHEMA_VERSION = "cozo-1"
 def connect(db_path: Path) -> Client:
     """Cozo client を返す. ファイルが無ければ新規作成. ロックは Cozo 任せ.
 
-    pycozo は pandas が入っていないと stderr に Traceback を吐くので
-    その間だけ stderr を黙らせる (機能は壊れない. dict 経路で動く).
+    dataframe=False を明示することで pycozo の pandas 取り込み試行を抑止する.
+    プラグイン全コードは dict 経路 (`res.get("rows")`) で結果を受け取る前提
+    のため、 pandas を入れて DataFrame 形式に切り替わると逆に壊れる. 明示で
+    dict 経路を選択しておくことで、 環境に pandas が後で入っても安全.
+
+    (engine="sqlite" は Cozo の埋め込みバックエンド選択. プラグイン業務フロー
+    の SQLite は 0.8.0 で廃止済で、 こちらは Cozo の内部実装の話.)
     """
-    import contextlib
-    import io
-    import sys
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    real_stderr = sys.stderr
-    sys.stderr = io.StringIO()
-    try:
-        return Client("sqlite", str(db_path))
-    finally:
-        sys.stderr = real_stderr
+    return Client("sqlite", str(db_path), dataframe=False)
 
 
 # ── relation 定義 (idempotent) ─────────────────────────────────────────

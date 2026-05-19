@@ -88,12 +88,12 @@ def judge_conflict(
 
 
 def run(fact_ids: list[int], trigger: str = "manual") -> int:
-    sqlite_db = get_db_path()
-    if sqlite_db is None or not cozo_db_present(sqlite_db):
+    db_path = get_db_path()
+    if db_path is None or not cozo_db_present(db_path):
         return 0
     if os.environ.get("PERSONA_LINT_DISABLE") == "1":
         return 0
-    cozo_path = cozo_db_path_for(sqlite_db)
+    cozo_path = cozo_db_path_for(db_path)
     llm = OllamaClient()
     total_pairs = 0
     total_flagged = 0
@@ -126,9 +126,19 @@ def run(fact_ids: list[int], trigger: str = "manual") -> int:
     return 0
 
 
+STDIN_WAIT_TIMEOUT = float(os.environ.get("PERSONA_LINT_STDIN_TIMEOUT", "30"))
+
+
 def main() -> int:
+    # 親 (spawn.py) が payload を流す前にハーネスごと死ぬと、 子はここで
+    # 永遠に stdin EOF を待ち続けて zombie 化する (= scripts.write.run と同パターン).
+    # select で短時間だけ stdin を覗き、 アイドルなら諦める.
+    import select
+    r, _, _ = select.select([sys.stdin], [], [], STDIN_WAIT_TIMEOUT)
+    if not r:
+        return 0
     try:
-        payload = json.load(sys.stdin)
+        payload = json.loads(sys.stdin.read())
     except Exception:
         return 0
     fact_ids = payload.get("fact_ids") or []

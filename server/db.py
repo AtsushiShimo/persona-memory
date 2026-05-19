@@ -1,13 +1,11 @@
 """MCP server backend (Cozo).
 
-0.8.0 から SQLite を業務フローから完全に外し、 Cozo 単独経路に統一した.
-旧 SQLite 経路は読み専用バックアップとして物理残置されるが、 本 MCP server
-からは参照しない. 関数シグネチャは旧 SQLite 版と互換を保ち、 上位 server/main.py
-は変更不要.
+0.8.0 で SQLite を業務フローから外し、 0.8.6 で残滓 (bytes 詰め直し / 変数名等)
+も整理. Cozo 単独経路.
 
-db_path() は引き続き <persona>.db (SQLite path) を返す — これは
-.persona-memory ディレクトリの persona 名解決の手がかりとして機能する.
-実際の読み書きは <persona>.cozo.db に対して行う.
+db_path() は PERSONA_MEMORY_DB env から path を返す. env 値は `.cozo.db` 直接
+でも、 旧 `.db` 風でも受け付ける (cozo_db_path_for で正規化). 実際の読み書きは
+全て `.cozo.db` に対して行う.
 """
 from __future__ import annotations
 
@@ -22,12 +20,16 @@ _PERSONA_NAME_BRACKET_RE = re.compile(r"[『「](.+?)[』」]")
 
 
 def db_path() -> Path:
-    """SQLite path (= persona 名解決の手がかり). 実体は使わない."""
+    """PERSONA_MEMORY_DB env が指すペルソナ DB の path を返す.
+
+    値は `.cozo.db` 直接でも旧 `.db` 風でも受け付ける. `.cozo.db` への正規化は
+    `_cozo_path()` (= scripts.db_cozo.wire.cozo_db_path_for) が担当.
+    """
     raw = os.environ.get(DB_PATH_ENV)
     if not raw:
         raise RuntimeError(
             f"Set {DB_PATH_ENV} to the persona memory DB path "
-            f"(e.g. /path/to/persona.db)."
+            f"(e.g. /path/to/persona.cozo.db)."
         )
     p = Path(raw).expanduser()
     if not p.exists():
@@ -38,7 +40,7 @@ def db_path() -> Path:
 
 
 def _cozo_path() -> Path:
-    """`<persona>.db` → `<persona>.cozo.db`. 既に `.cozo.db` ならそのまま."""
+    """env の path を `.cozo.db` に正規化. 冪等."""
     from scripts.db_cozo.wire import cozo_db_path_for
     return cozo_db_path_for(db_path())
 
@@ -122,20 +124,11 @@ def upsert_fact(
     return fid
 
 
-def write_fact_embedding(fact_id: int, embedding_blob_or_list) -> None:
-    """fact relation の embedding 列を更新.
-
-    互換のため引数名は旧版 (`embedding_blob: bytes`) を踏襲しているが、
-    Cozo は <F32; 768> 型なので list[float] を受け付ける. bytes が来たら
-    768 個の f32 として unpack して渡す.
-    """
-    import struct
-    if isinstance(embedding_blob_or_list, (bytes, bytearray, memoryview)):
-        vec = list(struct.unpack(f"{768}f", bytes(embedding_blob_or_list)))
-    else:
-        vec = list(embedding_blob_or_list)
-    if not vec:
+def write_fact_embedding(fact_id: int, embedding: list[float]) -> None:
+    """fact relation の embedding 列を更新 (Cozo 直叩き)."""
+    if not embedding:
         return
+    vec = list(embedding)
     client = _cozo_client()
     # 既存 fact の embedding 列だけ更新する形 (= 他列は維持).
     # Cozo の :put は全列指定が必要なので一度読んでから書き直す.
@@ -169,14 +162,12 @@ def write_fact_embedding(fact_id: int, embedding_blob_or_list) -> None:
 
 def search_facts(
     *,
-    embedding_blob: bytes,
+    embedding: list[float],
     top_k: int,
     category: str | None,
 ) -> list[dict]:
-    """fact をベクター検索. 互換のため `embedding_blob` は bytes 受けるが
-    Cozo には list[float] を渡す."""
-    import struct
-    vec = list(struct.unpack(f"{768}f", bytes(embedding_blob)))
+    """fact をベクター検索 (Cozo HNSW 直叩き)."""
+    vec = list(embedding)
     client = _cozo_client()
     if category:
         res = client.run(
@@ -241,10 +232,9 @@ def get_fact(fact_id: int) -> dict | None:
     }
 
 
-def find_neighbors(fact_id: int, embedding_blob: bytes, top_k: int) -> list[dict]:
+def find_neighbors(fact_id: int, embedding: list[float], top_k: int) -> list[dict]:
     """fact_id 以外の active 近傍."""
-    import struct
-    vec = list(struct.unpack(f"{768}f", bytes(embedding_blob)))
+    vec = list(embedding)
     client = _cozo_client()
     res = client.run(
         "?[dist, id, c, k, v] := "
@@ -389,15 +379,11 @@ def append_episode(
     return save_episode(client, role=role, content=content, session_id=sid)
 
 
-def write_episode_embedding(episode_id: int, embedding_blob_or_list) -> None:
-    """episode relation の embedding 列を更新."""
-    import struct
-    if isinstance(embedding_blob_or_list, (bytes, bytearray, memoryview)):
-        vec = list(struct.unpack(f"{768}f", bytes(embedding_blob_or_list)))
-    else:
-        vec = list(embedding_blob_or_list)
-    if not vec:
+def write_episode_embedding(episode_id: int, embedding: list[float]) -> None:
+    """episode relation の embedding 列を更新 (Cozo 直叩き)."""
+    if not embedding:
         return
+    vec = list(embedding)
     client = _cozo_client()
     row = client.run(
         "?[role, content, summary, session_id, topic_id, ts] := "
@@ -453,10 +439,9 @@ def bind_session_to_topic(*, session_id: str | None, topic_id: str) -> dict:
     return {"bound": True, "session_id": sid, "topic_id": topic_id}
 
 
-def search_episodes(*, embedding_blob: bytes, top_k: int) -> list[dict]:
-    """episode をベクター検索."""
-    import struct
-    vec = list(struct.unpack(f"{768}f", bytes(embedding_blob)))
+def search_episodes(*, embedding: list[float], top_k: int) -> list[dict]:
+    """episode をベクター検索 (Cozo HNSW 直叩き)."""
+    vec = list(embedding)
     client = _cozo_client()
     res = client.run(
         "?[dist, id, sid, role, summary, ts] := "

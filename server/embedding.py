@@ -95,16 +95,16 @@ async def health() -> dict[str, str | bool]:
             }
 
 
-def pack_embedding(vec: Sequence[float]) -> bytes:
-    """Pack an embedding into the binary format sqlite-vec expects.
+def l2_normalize(vec: Sequence[float]) -> list[float]:
+    """ベクトルを L2 正規化して list[float] で返す.
 
-    The vector is L2-normalized so that L2 distance corresponds to
-    sqrt(2 - 2*cosine_similarity). Values are then in [0, ~1.41].
+    旧 sqlite-vec 時代の `pack_embedding` の置き換え. SQLite-vec は廃止し
+    Cozo 直叩きになったので bytes 詰め直しは不要 (Cozo は list[float] を
+    受け取る). 正規化処理は既存 embedding データとの整合のため維持.
     """
     import math
-    import struct
 
     norm = math.sqrt(sum(x * x for x in vec))
     if norm > 0:
-        vec = [x / norm for x in vec]
-    return struct.pack(f"{len(vec)}f", *vec)
+        return [x / norm for x in vec]
+    return list(vec)

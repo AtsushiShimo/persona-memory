@@ -20,7 +20,7 @@ from .embedding import (
     embed_text,
     health,
     judge_conflict,
-    pack_embedding,
+    l2_normalize,
 )
 
 mcp = FastMCP("persona-memory")
@@ -66,7 +66,7 @@ async def write_fact(
             "embedded": False,
             "warning": str(e),
         }
-    db.write_fact_embedding(fact_id, pack_embedding(vec))
+    db.write_fact_embedding(fact_id, l2_normalize(vec))
     return {"fact_id": fact_id, "embedded": True, "embedding_dim": len(vec)}
 
 
@@ -122,7 +122,7 @@ async def save_knowledge(
             "embedded": False,
             "warning": str(e),
         }
-    db.write_fact_embedding(fact_id, pack_embedding(vec))
+    db.write_fact_embedding(fact_id, l2_normalize(vec))
     return {
         "fact_id": fact_id,
         "key": key,
@@ -150,14 +150,14 @@ async def search_memory(
         vec = await embed_text(query)
     except EmbeddingError as e:
         return {"error": str(e)}
-    blob = pack_embedding(vec)
+    norm_vec = l2_normalize(vec)
     out: dict[str, Any] = {
         "facts": db.search_facts(
-            embedding_blob=blob, top_k=top_k, category=category
+            embedding=norm_vec, top_k=top_k, category=category
         ),
     }
     if include_episodes:
-        out["episodes"] = db.search_episodes(embedding_blob=blob, top_k=top_k)
+        out["episodes"] = db.search_episodes(embedding=norm_vec, top_k=top_k)
     return out
 
 
@@ -191,8 +191,8 @@ async def lint_memory(neighbor_top_k: int = 5) -> dict[str, Any]:
         except EmbeddingError as e:
             judge_errors.append(f"embed fail id={fact['id']}: {e}")
             continue
-        blob = pack_embedding(vec)
-        neighbors = db.find_neighbors(fact["id"], blob, neighbor_top_k)
+        norm_vec = l2_normalize(vec)
+        neighbors = db.find_neighbors(fact["id"], norm_vec, neighbor_top_k)
         for n in neighbors:
             if n["distance"] > NEIGHBOR_DISTANCE_MAX:
                 continue
@@ -328,7 +328,7 @@ async def append_episode(
             "embedded": False,
             "warning": str(e),
         }
-    db.write_episode_embedding(episode_id, pack_embedding(vec))
+    db.write_episode_embedding(episode_id, l2_normalize(vec))
     return {"episode_id": episode_id, "embedded": True}
 
 
@@ -381,10 +381,10 @@ def register_lesson_triggers(
         delete_triggers_for, get_lesson_by_key, register_trigger,
     )
 
-    sqlite_path = db.db_path()
-    if not cozo_db_present(sqlite_path):
+    db_legacy_path = db.db_path()
+    if not cozo_db_present(db_legacy_path):
         return {"error": "Cozo DB が見つかりません. /persona-memory:init を実行してください."}
-    cozo_path = cozo_db_path_for(sqlite_path)
+    cozo_path = cozo_db_path_for(db_legacy_path)
     try:
         client = _cozo_init(cozo_path)
     except Exception as e:
@@ -413,7 +413,23 @@ def register_lesson_triggers(
         register_trigger(client, lesson.fact_id, kind, pattern, action)
         registered += 1
 
-    return {"registered": registered, "lesson_fact_id": lesson.fact_id}
+    # 0.8.6: 反省モードの「ご主人様承認による解除」 経路.
+    # lesson 保存 + register_lesson_triggers 成功 = ご主人様承認が降りた証跡.
+    # この瞬間に反省 state を自動 clear する (= 自然言語解除の実体).
+    reflection_cleared = False
+    try:
+        from scripts.reflection.state import clear as _r_clear, get_state as _r_get
+        if _r_get(client).active:
+            _r_clear(client)
+            reflection_cleared = True
+    except Exception:
+        pass
+
+    return {
+        "registered": registered,
+        "lesson_fact_id": lesson.fact_id,
+        "reflection_state_cleared": reflection_cleared,
+    }
 
 
 @mcp.tool()

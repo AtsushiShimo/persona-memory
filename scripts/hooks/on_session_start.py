@@ -1,9 +1,13 @@
-"""SessionStart hook 同期処理 (0.8.0 — Cozo 単独経路).
+"""SessionStart hook 同期処理 (Cozo 単独経路).
 
 実行内容:
 1. boot 層 (persona / rule) 全件を additionalContext で注入 (Cozo)
 2. condense 閾値チェック (50 facts / 5000 tokens 超なら stderr 警告)
-3. Ollama prewarm + 各種 Cozo backfill を detach 起動
+3. 各種 Cozo backfill を detach 起動
+
+0.8.6 改修: Ollama モデル先読みは廃止. モデルは初回アクセス時に load し、
+keep_alive (既定 3m) で短時間だけ常駐させる方針に統一. 起動時に RAM を
+14GB+ 占有する挙動は議論なく入っていたため除去.
 
 fail-open: 例外 / Cozo 未初期化なら exit 0 で素通し.
 """
@@ -22,7 +26,6 @@ from scripts.db_cozo.fact_persist import (
 from scripts.db_cozo.wire import cozo_db_path_for, cozo_db_present
 from scripts.hooks.spawn import (
     spawn_cozo_graph_backfill, spawn_cozo_topic_summary_backfill,
-    spawn_prewarm,
 )
 from scripts.shared.env import get_db_path
 
@@ -64,9 +67,6 @@ def main() -> int:
         sys.stderr.write(f"[persona-memory] boot inject failed: {e}\n")
 
     _emit_additional_context(text)
-
-    # Ollama heavy + embed prewarm (fail-open)
-    spawn_prewarm()
 
     # Cozo backfill 自動発火 (detach, fail-open)
     spawn_cozo_topic_summary_backfill(db_path)

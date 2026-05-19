@@ -80,6 +80,19 @@ _AUTO_MEMORY_REDIRECT_RE = re.compile(
 # Write/Edit 系のツール一覧
 _WRITE_TOOL_NAMES = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 
+# 反省モード active 中に block する修正系ツール群 (0.8.6).
+# Read / Grep / Glob / WebFetch 等の調査系は許可 — 反省モード中も調査・確認は続けられる.
+_REFLECTION_BLOCKED_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"}
+
+_REFLECTION_BLOCK_MESSAGE = (
+    "🔴 反省モードが進行中のためツール実行をブロックしました。"
+    "反省モード中は修正系の操作 (Edit / Write / MultiEdit / NotebookEdit / Bash) "
+    "は一切実行できません。"
+    "解除方法: (a) ご主人様の承認後、 lesson を保存 + register_lesson_triggers で "
+    "trigger 登録 / (b) slash command `/persona-memory:reflection-off` を実行。"
+    "それまでは Read / Grep / Glob 等の調査系のみ実行可能です。"
+)
+
 DENY_MESSAGE_DB = (
     "persona-memory の DB への直接アクセスは禁止されています。"
     "記憶の参照は UserPromptSubmit hook の additionalContext (= recall LLM の結果) "
@@ -131,6 +144,33 @@ def _is_blocked_write(file_path: str) -> str | None:
     if _CC_AUTO_MEMORY_RE.search(file_path):
         return DENY_MESSAGE_AUTO_MEMORY
     return None
+
+
+def _check_reflection_active_block(tool_name: str, tool_input: dict) -> str | None:
+    """反省モード active 中の修正系ツール block 判定 (0.8.6).
+
+    state.active=True かつ tool_name が修正系なら deny reason を返す.
+    Cozo 不在 / 例外 / state inactive → None (= 既存ブロック判定に委ねる).
+    """
+    if tool_name not in _REFLECTION_BLOCKED_TOOLS:
+        return None
+    try:
+        from scripts.db_cozo.connection import init_db as _cozo_init
+        from scripts.db_cozo.wire import cozo_db_path_for, cozo_db_present
+        from scripts.reflection.state import get_state
+        from scripts.shared.env import get_db_path
+        db_path = get_db_path()
+        if db_path is None or not cozo_db_present(db_path):
+            return None
+        client = _cozo_init(cozo_db_path_for(db_path))
+        if get_state(client).active:
+            return _REFLECTION_BLOCK_MESSAGE
+        return None
+    except Exception as e:
+        sys.stderr.write(
+            f"[persona-memory] reflection active block check failed: {e}\n"
+        )
+        return None
 
 
 def _check_lesson_triggers(tool_name: str, tool_input: dict) -> str | None:
@@ -190,13 +230,17 @@ def main() -> int:
     except Exception:
         debug_mode = bool(os.environ.get("PERSONA_MEMORY_DEBUG", "").strip())
 
-    reason: str | None = None
-    if tool_name == "Bash":
-        reason = _is_blocked_bash(tool_input.get("command", "") or "")
-    elif tool_name == "Read":
-        reason = _is_blocked_read(tool_input.get("file_path", "") or "")
-    elif tool_name in _WRITE_TOOL_NAMES:
-        reason = _is_blocked_write(tool_input.get("file_path", "") or "")
+    # 0.8.6 反省モード active 中の全 Edit/Write/Bash block (最優先).
+    # 反省モードが立っていれば、 議論・調査以外の操作は全停止する.
+    reason: str | None = _check_reflection_active_block(tool_name, tool_input)
+
+    if reason is None:
+        if tool_name == "Bash":
+            reason = _is_blocked_bash(tool_input.get("command", "") or "")
+        elif tool_name == "Read":
+            reason = _is_blocked_read(tool_input.get("file_path", "") or "")
+        elif tool_name in _WRITE_TOOL_NAMES:
+            reason = _is_blocked_write(tool_input.get("file_path", "") or "")
 
     if debug_mode and reason == DENY_MESSAGE_DB:
         reason = None

@@ -155,10 +155,10 @@ def process_episode(
 
     # 0.7.6 Cozo リアルタイム議論グラフ (= wire.maybe_cozo_extract_graph)
     try:
-        sqlite_db = get_db_path()
-        if sqlite_db is not None:
+        db_path = get_db_path()
+        if db_path is not None:
             maybe_cozo_extract_graph(
-                sqlite_db,
+                db_path,
                 role=episode["role"],
                 content=episode["content"],
                 session_id=episode["session_id"],
@@ -195,16 +195,16 @@ def run(
     buffer_n: int = DEFAULT_BUFFER_N,
     llm: LLMClient | None = None,
 ) -> int:
-    sqlite_db = get_db_path()
-    if sqlite_db is None:
+    db_path = get_db_path()
+    if db_path is None:
         return 0
-    if not cozo_db_present(sqlite_db):
+    if not cozo_db_present(db_path):
         sys.stderr.write(
             "[persona-memory] Cozo DB が見つかりません (write). "
             "/persona-memory:upgrade を実行してください.\n",
         )
         return 0
-    cozo_path = cozo_db_path_for(sqlite_db)
+    cozo_path = cozo_db_path_for(db_path)
     cli = llm or OllamaClient()
     touched_fact_ids: list[int] = []
 
@@ -237,9 +237,31 @@ def run(
     return 0
 
 
+STDIN_WAIT_TIMEOUT = float(os.environ.get("PERSONA_WRITE_STDIN_TIMEOUT", "30"))
+
+
+def _read_stdin_with_timeout(timeout: float) -> str | None:
+    """stdin から payload を読む. timeout 秒以内に何も来なければ None を返す.
+
+    対策の意図: spawn 側 (hook) が `Popen` 直後にハーネスごと死ぬと、 子は
+    `json.load(sys.stdin)` で EOF 来ない stdin を永遠に待ち続け、 zombie 化する.
+    `start_new_session=True` で切り離されているので親死亡では巻き込まれない.
+    select() で stdin に読める/EOF があるかをまず確認し、 アイドルなら諦める.
+    """
+    import select
+    r, _, _ = select.select([sys.stdin], [], [], timeout)
+    if not r:
+        return None
+    return sys.stdin.read()
+
+
 def main() -> int:
+    raw = _read_stdin_with_timeout(STDIN_WAIT_TIMEOUT)
+    if raw is None:
+        # parent が payload を流す前に死んだ等. 静かに終了 (= zombie 化させない).
+        return 0
     try:
-        payload = json.load(sys.stdin)
+        payload = json.loads(raw)
     except Exception:
         return 0
     episode_ids = payload.get("episode_ids") or []

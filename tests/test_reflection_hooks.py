@@ -30,16 +30,16 @@ def tmp_persona(tmp_path: Path, monkeypatch):
     persona_dir = tmp_path / ".persona-memory"
     persona_dir.mkdir()
     (persona_dir / "active-persona").write_text("test", encoding="utf-8")
-    sqlite_path = persona_dir / "test.db"
+    db_path = persona_dir / "test.db"
     cozo_path = persona_dir / "test.cozo.db"
 
-    # 0.8.0: SQLite 経路は廃止. Cozo schema のみ. sqlite_path は touch のみで
+    # 0.8.0: SQLite 経路は廃止. Cozo schema のみ. db_path は touch のみで
     # path 互換 (= get_db_path が見るファイル) として確保.
-    sqlite_path.touch()
+    db_path.touch()
     from scripts.db_cozo.connection import init_db as _cozo_init
     _cozo_init(cozo_path)
 
-    monkeypatch.setenv("PERSONA_MEMORY_DB", str(sqlite_path))
+    monkeypatch.setenv("PERSONA_MEMORY_DB", str(db_path))
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     # 0.8.5: LLM-only 検知になったため keyword bypass フラグは消滅.
     # hook 統合テストは実 Ollama を要求する (= ローカル開発前提).
@@ -49,7 +49,62 @@ def tmp_persona(tmp_path: Path, monkeypatch):
     # 反省モード hook 経路の検証だけが目的なので recall パイプラインは不要.
     monkeypatch.setenv("PERSONA_RECALL_DISABLE", "1")
     monkeypatch.setenv("PERSONA_COZO_DISABLE", "1")
-    return {"sqlite": sqlite_path, "cozo": cozo_path, "root": tmp_path}
+    return {"db": db_path, "cozo": cozo_path, "root": tmp_path}
+
+
+def test_pretool_blocks_edit_during_reflection(tmp_persona):
+    """0.8.6: 反省モード active 中は Edit ツールが block される."""
+    from scripts.db_cozo.connection import init_db
+    from scripts.hooks.on_pre_tool_use import _check_reflection_active_block
+    from scripts.reflection.state import enter
+    client = init_db(tmp_persona["cozo"])
+    enter(client, episode_id=1, anger_phrase="ちげー")
+    reason = _check_reflection_active_block("Edit", {"file_path": "/tmp/x.py"})
+    assert reason is not None
+    assert "反省モード" in reason
+
+
+def test_pretool_blocks_write_during_reflection(tmp_persona):
+    """Write ツールも block される."""
+    from scripts.db_cozo.connection import init_db
+    from scripts.hooks.on_pre_tool_use import _check_reflection_active_block
+    from scripts.reflection.state import enter
+    client = init_db(tmp_persona["cozo"])
+    enter(client, episode_id=1, anger_phrase="x")
+    reason = _check_reflection_active_block("Write", {"file_path": "/tmp/x.py"})
+    assert reason is not None
+
+
+def test_pretool_blocks_bash_during_reflection(tmp_persona):
+    """Bash ツールも block される (read-only か否かを問わず全 Bash)."""
+    from scripts.db_cozo.connection import init_db
+    from scripts.hooks.on_pre_tool_use import _check_reflection_active_block
+    from scripts.reflection.state import enter
+    client = init_db(tmp_persona["cozo"])
+    enter(client, episode_id=1, anger_phrase="x")
+    reason = _check_reflection_active_block("Bash", {"command": "ls"})
+    assert reason is not None
+
+
+def test_pretool_does_not_block_read_during_reflection(tmp_persona):
+    """Read 系・確認系は反省モード中も許可 (調査・確認のため)."""
+    from scripts.db_cozo.connection import init_db
+    from scripts.hooks.on_pre_tool_use import _check_reflection_active_block
+    from scripts.reflection.state import enter
+    client = init_db(tmp_persona["cozo"])
+    enter(client, episode_id=1, anger_phrase="x")
+    assert _check_reflection_active_block("Read", {"file_path": "/tmp/x.py"}) is None
+    assert _check_reflection_active_block("Grep", {"pattern": "x"}) is None
+    assert _check_reflection_active_block("Glob", {"pattern": "*"}) is None
+
+
+def test_pretool_does_not_block_when_reflection_inactive(tmp_persona):
+    """反省モードが立っていなければ Edit/Write/Bash は素通り (lesson 経路に委ねる)."""
+    from scripts.hooks.on_pre_tool_use import _check_reflection_active_block
+    # state を立てない
+    assert _check_reflection_active_block("Edit", {"file_path": "/tmp/x.py"}) is None
+    assert _check_reflection_active_block("Write", {"file_path": "/tmp/x.py"}) is None
+    assert _check_reflection_active_block("Bash", {"command": "ls"}) is None
 
 
 def test_pretool_blocks_when_lesson_seeded(tmp_persona, monkeypatch):

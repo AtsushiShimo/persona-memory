@@ -86,10 +86,9 @@ def main() -> int:
                 format_lesson_block_for_prompt, match_lessons_for_prompt,
             )
             from scripts.reflection.state import (
-                clear as _r_clear, enter as _r_enter,
+                enter as _r_enter,
                 get_state as _r_get, increment_turn as _r_inc,
                 is_detection_enabled as _r_det_on,
-                should_force_clear as _r_force,
             )
             rstate = _r_get(client)
             # 動的 disable (slash / MCP toggle) で検知 skip. 既 active なら継続.
@@ -102,10 +101,7 @@ def main() -> int:
                 reflection_block = format_enter_instruction(phrase)
             elif rstate.active:
                 turn = _r_inc(client)
-                if _r_force(client):
-                    _r_clear(client)
-                else:
-                    reflection_block = format_continue_instruction(turn)
+                reflection_block = format_continue_instruction(turn)
             try:
                 lesson_matches = match_lessons_for_prompt(client, prompt)
                 lesson_prompt_block = format_lesson_block_for_prompt(
@@ -145,10 +141,19 @@ def main() -> int:
         except Exception as e:
             sys.stderr.write(f"[persona-memory] topic identify failed: {e}\n")
 
-        # ── user 発話を episode に raw 保存 ──
+        # ── user 発話を episode に raw 保存 (embedding 同梱で HNSW null 行を作らない) ──
+        prompt_emb: list[float] | None = None
+        try:
+            embed_model = os.environ.get("PERSONA_EMBED_MODEL", "nomic-embed-text")
+            prompt_emb = OllamaClient().embed(embed_model, prompt) or None
+        except Exception as e:
+            sys.stderr.write(
+                f"[persona-memory] inline embed failed (fallback to async): {e}\n"
+            )
         try:
             episode_id = save_episode(
                 client, role="user", content=prompt, session_id=session_id,
+                embedding=prompt_emb,
             )
         except Exception as e:
             sys.stderr.write(f"[persona-memory] save_episode failed: {e}\n")
