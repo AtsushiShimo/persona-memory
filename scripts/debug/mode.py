@@ -16,12 +16,14 @@
 - Cozo 経路に乗せると hook 毎発火で Cozo 接続コストが発生する.
 - ファイル存在チェック (os.path.exists) は ~1 μs で hook latency に影響なし.
 - 内容 read も TTL チェック時のみ (= flag 存在時のみ) で全体軽量.
-- 環境変数 PERSONA_MEMORY_DEBUG との OR 評価: 既存の plugin 開発者用経路と
-  併存させて壊さない.
+
+0.8.8 改修: 旧経路 (環境変数 PERSONA_MEMORY_DEBUG) を撤去し flag 一本化.
+理由: env 経路は「プロセス起動時にしか切替不可」 で UX 悪く、 加えて並走
+(env OR flag) 状態は design drift の温床. ユーザー判断 (= 発話) → MCP
+set_debug_mode → flag 書き込み の 1 経路に統一.
 """
 from __future__ import annotations
 
-import os
 import time
 from pathlib import Path
 
@@ -126,15 +128,12 @@ def status(db_path: Path) -> dict:
         return {"active": True}
 
 
-def is_env_debug() -> bool:
-    """環境変数 PERSONA_MEMORY_DEBUG が立っているか (旧経路)."""
-    return bool(os.environ.get("PERSONA_MEMORY_DEBUG", "").strip())
-
-
 def is_debug_active(db_path: Path | None) -> bool:
-    """flag or 環境変数 のどちらかで debug 有効か (hook が呼ぶ)."""
-    if is_env_debug():
-        return True
+    """flag で debug 有効か (hook が呼ぶ).
+
+    0.8.8 以降: 環境変数 PERSONA_MEMORY_DEBUG は debug mode の起動経路としては
+    廃止. flag (set_debug_mode 経由) のみ. db_path が None なら常に False.
+    """
     if db_path is None:
         return False
     return is_active(db_path)

@@ -69,17 +69,31 @@ def test_enable_extends_existing(db_path):
     assert int(e2) >= int(e1)
 
 
-def test_is_debug_active_via_env(db_path, monkeypatch):
-    """環境変数 PERSONA_MEMORY_DEBUG でも active 扱い (OR 評価)."""
+def test_is_debug_active_env_alone_does_not_activate(db_path, monkeypatch):
+    """0.8.8: 環境変数 PERSONA_MEMORY_DEBUG では debug mode は起動しない.
+
+    回帰防止: env 経路 (= 旧経路) を復活させないこと. flag 経路 (set_debug_mode)
+    のみが debug mode の起動経路という設計の単一化を担保する.
+    """
     monkeypatch.setenv("PERSONA_MEMORY_DEBUG", "1")
-    assert dm.is_debug_active(db_path) is True
-    assert dm.is_debug_active(None) is True
+    # flag 不在 → env が立っていても inactive
+    assert dm.is_debug_active(db_path) is False
+    assert dm.is_debug_active(None) is False
 
 
 def test_is_debug_active_via_flag(db_path, monkeypatch):
     monkeypatch.delenv("PERSONA_MEMORY_DEBUG", raising=False)
     dm.enable(db_path)
     assert dm.is_debug_active(db_path) is True
+
+
+def test_is_debug_active_flag_wins_over_env(db_path, monkeypatch):
+    """env が立っていても flag が無効なら inactive (回帰防止)."""
+    monkeypatch.setenv("PERSONA_MEMORY_DEBUG", "1")
+    # flag を一度 enable → disable で消す
+    dm.enable(db_path)
+    dm.disable(db_path)
+    assert dm.is_debug_active(db_path) is False
 
 
 def test_status_with_remaining_seconds(db_path):

@@ -51,7 +51,8 @@ DEFAULT_BOOT_FACTS: list[tuple[str, str, str, int]] = [
         "hook / supersedes / fact / category / key / importance / json / "
         "ローカル LLM 等) を使わず、 自然語 (『思い出す』『覚えている』"
         "『ぼんやり覚えている』『記憶にない』 等) に翻訳する。 "
-        "例外: (1) 仕組みを明示質問された時、 (2) PERSONA_MEMORY_DEBUG 設定時、 "
+        "例外: (1) 仕組みを明示質問された時、 "
+        "(2) PERSONA_MEMORY_DEBUG (recall ログレベル) 設定時、 "
         "(3) このプラグイン自体の開発議論時。",
         9,
     ),
@@ -60,7 +61,7 @@ DEFAULT_BOOT_FACTS: list[tuple[str, str, str, int]] = [
         "Bash / Read / SQL で .persona-memory/ 配下や .db を直接覗かない。 "
         "記憶は毎発話 hook から自動付与される。 例外: "
         "(1) MCP search_memory (explicit_recall_via_mcp の条件下)、 "
-        "(2) PERSONA_MEMORY_DEBUG 設定時。",
+        "(2) デバッグモード起動中 (= set_debug_mode で flag が立っている時)。",
         9,
     ),
     (
@@ -135,7 +136,7 @@ DEFAULT_BOOT_FACTS: list[tuple[str, str, str, int]] = [
         "用が済んだら同 tool を on=false で呼んで明示的に off に戻す. "
         "TTL は default 30 分で自動失効するが、 切り忘れ防止のため明示 off を推奨. "
         "**ユーザー明示指示が承認の根拠**. 自発判断で勝手に on にしない. "
-        "PERSONA_MEMORY_DEBUG 環境変数とは独立 (= OR 評価).",
+        "0.8.8 以降: 旧 env 経路 (PERSONA_MEMORY_DEBUG) は撤去済. flag 一本化.",
         8,
     ),
     (

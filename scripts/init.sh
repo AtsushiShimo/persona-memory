@@ -248,6 +248,10 @@ cat <<EOF
 
  SessionStart で boot 層 (persona facts) が自動注入されます。
  デバッグログを見たい場合は:
-   export PERSONA_MEMORY_DEBUG=c  # default: 最詳細
+   export PERSONA_MEMORY_DEBUG=c  # recall ログレベル (最詳細). 0.8.8 以降 DB block は外れません.
+
+ DB block を一時的に外したい場合 (= debug mode):
+   ペルソナに『デバッグモード on にして』 と発話してください.
+   ペルソナが MCP set_debug_mode(on=true) を呼び flag を立てます (TTL 30 分).
 =========================================================
 EOF

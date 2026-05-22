@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -12,18 +15,39 @@ PYTHON = sys.executable
 
 
 def _run_hook(payload: dict, debug: bool = False) -> tuple[int, str, str]:
+    """hook を subprocess で起動.
+
+    0.8.8: debug=True の場合、 一時 .persona-memory/ + ダミー Cozo DB + flag を
+    作成して `PERSONA_MEMORY_DB` を指す (= flag 経路で debug mode を起動).
+    旧 env 経路 (PERSONA_MEMORY_DEBUG) は撤去済のため env では起動できない.
+    """
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT)
     env.pop("PERSONA_MEMORY_DEBUG", None)
+    tempdir: str | None = None
     if debug:
-        env["PERSONA_MEMORY_DEBUG"] = "c"
-    r = subprocess.run(
-        [PYTHON, "-m", "scripts.hooks.on_pre_tool_use"],
-        input=json.dumps(payload).encode(),
-        env=env,
-        capture_output=True,
-    )
-    return r.returncode, r.stdout.decode(), r.stderr.decode()
+        tempdir = tempfile.mkdtemp(prefix="pmtest-debug-")
+        pdir = Path(tempdir) / ".persona-memory"
+        pdir.mkdir(parents=True, exist_ok=True)
+        db = pdir / "test.cozo.db"
+        db.write_bytes(b"")
+        flag = pdir / "debug_mode.flag"
+        flag.write_text(
+            f"expires_at:{int(time.time()) + 3600}\nreason:test\n",
+            encoding="utf-8",
+        )
+        env["PERSONA_MEMORY_DB"] = str(db)
+    try:
+        r = subprocess.run(
+            [PYTHON, "-m", "scripts.hooks.on_pre_tool_use"],
+            input=json.dumps(payload).encode(),
+            env=env,
+            capture_output=True,
+        )
+        return r.returncode, r.stdout.decode(), r.stderr.decode()
+    finally:
+        if tempdir:
+            shutil.rmtree(tempdir, ignore_errors=True)
 
 
 def _is_denied(stdout: str) -> bool:
@@ -313,10 +337,10 @@ def test_allow_complex_commit_message_with_mkdir_and_path():
     assert out.strip() == "", f"unexpectedly blocked: {out}"
 
 
-# ── PERSONA_MEMORY_DEBUG bypass (DB block のみ解除、 auto-memory block は維持) ──
+# ── debug mode bypass (flag 経由でのみ起動. DB block のみ解除、 auto-memory block は維持) ──
 
 def test_debug_mode_bypasses_sqlite3_block():
-    """PERSONA_MEMORY_DEBUG が set されていれば DB 直接アクセスは通る."""
+    """flag (set_debug_mode 経由) が立っていれば DB 直接アクセスは通る."""
     rc, out, _ = _run_hook({
         "tool_name": "Bash",
         "tool_input": {"command": "sqlite3 .persona-memory/foo.db 'SELECT 1'"},
@@ -363,11 +387,36 @@ def test_debug_mode_does_not_bypass_bash_auto_memory_block():
     assert _is_denied(out)
 
 
+def test_env_var_alone_does_not_bypass_db_block():
+    """0.8.8 撤去回帰: 環境変数 PERSONA_MEMORY_DEBUG を立てても DB block は外れない.
+
+    旧経路 (env var) を復活させないこと. flag (set_debug_mode 経由) のみが
+    debug mode の起動経路という設計の単一化を担保する.
+    """
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(ROOT)
+    env["PERSONA_MEMORY_DEBUG"] = "c"  # 立ててもダメ
+    # PERSONA_MEMORY_DB を指さず flag も無い状態 = 純粋に env だけが立っている
+    env.pop("PERSONA_MEMORY_DB", None)
+    r = subprocess.run(
+        [PYTHON, "-m", "scripts.hooks.on_pre_tool_use"],
+        input=json.dumps({
+            "tool_name": "Bash",
+            "tool_input": {"command": "sqlite3 .persona-memory/foo.db .schema"},
+        }).encode(),
+        env=env,
+        capture_output=True,
+    )
+    assert _is_denied(r.stdout.decode()), \
+        "env var では debug mode が起動しないはず (0.8.8 撤去後)"
+
+
 def test_empty_debug_env_does_not_bypass():
-    """PERSONA_MEMORY_DEBUG='' (空文字) は debug mode 扱いしない."""
+    """PERSONA_MEMORY_DEBUG='' (空文字) も当然 debug mode 扱いしない (回帰)."""
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT)
     env["PERSONA_MEMORY_DEBUG"] = ""
+    env.pop("PERSONA_MEMORY_DB", None)
     r = subprocess.run(
         [PYTHON, "-m", "scripts.hooks.on_pre_tool_use"],
         input=json.dumps({

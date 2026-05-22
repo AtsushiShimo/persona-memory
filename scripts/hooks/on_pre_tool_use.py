@@ -217,10 +217,8 @@ def main() -> int:
     # debug mode では DB 直接アクセス block を skip する。 plugin 開発時に
     # 別 project の DB を seed / 検査する 等の正当な作業や、 不具合調査で
     # 一時的に DB を覗きたい場面で hook が誤発火で止めるのを防ぐ。
-    # 経路 2 つ (OR):
-    #   1. 環境変数 PERSONA_MEMORY_DEBUG (= 旧経路. プロセス起動時のみ)
-    #   2. ファイル flag .persona-memory/debug_mode.flag (= 0.7.8 追加.
-    #      MCP set_debug_mode 経由で同セッション中に toggle 可能. TTL 自動失効).
+    # 0.8.8 以降: 経路は flag (.persona-memory/debug_mode.flag) 一本化.
+    # MCP set_debug_mode 経由で同セッション中に toggle 可 / TTL 自動失効.
     # auto-memory block (forbid_auto_memory ルール) は debug 中も維持する —
     # こちらは「記憶を分散させない」 という保護で、 DB 直接アクセスとは別軸。
     try:
@@ -228,7 +226,7 @@ def main() -> int:
         from scripts.shared.env import get_db_path
         debug_mode = is_debug_active(get_db_path())
     except Exception:
-        debug_mode = bool(os.environ.get("PERSONA_MEMORY_DEBUG", "").strip())
+        debug_mode = False
 
     # 0.8.6 反省モード active 中の全 Edit/Write/Bash block (最優先).
     # 反省モードが立っていれば、 議論・調査以外の操作は全停止する.

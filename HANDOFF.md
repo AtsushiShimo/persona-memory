@@ -1152,7 +1152,11 @@ Claude Code が一度注意された実装上のミスを永遠に修正出来�
   が呼ぶ. TTL (default 30 分) で自動失効 → hook 側が自己清掃.
 - `persona/playbook_debug_mode_request` を boot defaults に追加.
   「デバッグオン」「DB 見て」 系発話で main agent が tool を呼ぶ flow.
-- 環境変数経路は維持 (= OR 評価, 既存開発者経路を壊さない).
+- 0.7.8 時点: 環境変数経路は維持 (= OR 評価) で既存開発者経路を壊さなかった.
+- **0.8.8 で env 経路 (PERSONA_MEMORY_DEBUG による DB block skip) は撤去.**
+  flag (set_debug_mode 経由) 一本化 (design drift 解消). 同名 env var は
+  recall パイプライン全段ログのレベル制御 (`scripts/debug/recall_log.py`) の
+  責務のみで残置 (= 別軸の機能).
 
 ### 16.2 検証
 - 全 587 件 PASS (= 既存 574 + 0.7.7 新規 + 0.7.8 新規). 3 既存 fail は
