@@ -45,13 +45,15 @@ class OllamaClient:
         }
         if num_ctx is not None:
             payload["options"] = {"num_ctx": num_ctx}
-        r = httpx.post(
-            f"{self.host}/api/generate",
-            json=payload,
-            timeout=self.timeout,
-        )
-        r.raise_for_status()
-        return (r.json().get("response") or "").strip()
+        from scripts.shared.ollama_semaphore import ollama_slot
+        with ollama_slot():
+            r = httpx.post(
+                f"{self.host}/api/generate",
+                json=payload,
+                timeout=self.timeout,
+            )
+            r.raise_for_status()
+            return (r.json().get("response") or "").strip()
 
     def embed(self, model: str, text: str) -> list[float]:
         # nomic-embed-text 等のコンテキスト窓超過 (~2048 token) で 500 が返る
@@ -61,10 +63,12 @@ class OllamaClient:
         safe = truncate_for_embedding(text)
         if not safe:
             return []
-        r = httpx.post(
-            f"{self.host}/api/embeddings",
-            json={"model": model, "prompt": safe, "keep_alive": DEFAULT_KEEP_ALIVE},
-            timeout=self.timeout,
-        )
-        r.raise_for_status()
-        return list(r.json().get("embedding") or [])
+        from scripts.shared.ollama_semaphore import ollama_slot
+        with ollama_slot():
+            r = httpx.post(
+                f"{self.host}/api/embeddings",
+                json={"model": model, "prompt": safe, "keep_alive": DEFAULT_KEEP_ALIVE},
+                timeout=self.timeout,
+            )
+            r.raise_for_status()
+            return list(r.json().get("embedding") or [])

@@ -255,7 +255,16 @@ def _read_stdin_with_timeout(timeout: float) -> str | None:
     return sys.stdin.read()
 
 
+MAX_DRAIN_ITERATIONS = int(os.environ.get("PERSONA_WRITE_DRAIN_MAX", "8"))
+# 0.8.7: プロセス全体ウォッチドッグ (秒). httpx より下のレイヤ (ソケット, Cozo init,
+# fcntl 等) で hang した場合の最後の保険. 0 / 負数で無効化.
+WATCHDOG_SEC = int(os.environ.get("PERSONA_WRITE_WATCHDOG_SEC", "600"))
+
+
 def main() -> int:
+    from scripts.shared.watchdog import arm_watchdog
+    arm_watchdog(WATCHDOG_SEC)
+
     raw = _read_stdin_with_timeout(STDIN_WAIT_TIMEOUT)
     if raw is None:
         # parent が payload を流す前に死んだ等. 静かに終了 (= zombie 化させない).
@@ -265,10 +274,34 @@ def main() -> int:
     except Exception:
         return 0
     episode_ids = payload.get("episode_ids") or []
-    if not episode_ids:
-        return 0
     buffer_n = int(payload.get("buffer_n", DEFAULT_BUFFER_N))
-    return run(episode_ids, buffer_n)
+
+    # 0.8.7: 多重起動防止 lock の pending IDs を drain しながらループ処理.
+    # 自分が処理中に spawn_write が追記した IDs を取りこぼさない.
+    from scripts.shared.env import get_db_path
+    from scripts.shared.write_lock import drain_pending, release
+    db_path = get_db_path()
+
+    rc = 0
+    ids: list[int] = list(episode_ids)
+    for _ in range(MAX_DRAIN_ITERATIONS):
+        if ids:
+            rc = run(ids, buffer_n) or rc
+        if db_path is None:
+            break
+        pending = drain_pending(db_path)
+        if not pending:
+            break
+        ids = pending
+
+    if db_path is not None:
+        try:
+            release(db_path, os.getpid())
+        except Exception as e:
+            sys.stderr.write(
+                f"[persona-memory] write_lock release failed: {e}\n",
+            )
+    return rc
 
 
 if __name__ == "__main__":

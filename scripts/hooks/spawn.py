@@ -11,11 +11,52 @@ import sys
 
 
 def spawn_write(episode_ids: list[int]) -> None:
+    """write.run を多重起動防止 lock 経由で detach 起動.
+
+    既存 write.run 生存中は spawn せず、 episode_ids を lockfile の pending に
+    追記する. 完走中の write.run が drain して拾い直す (= 取りこぼし無し).
+    詳細: scripts/shared/write_lock.py.
+    """
     if os.environ.get("PERSONA_WRITE_DISABLE") == "1":
         return
     if not episode_ids:
         return
 
+    try:
+        from scripts.shared.env import get_db_path
+        from scripts.shared.write_lock import acquire_and_spawn
+        db_path = get_db_path()
+    except Exception:
+        db_path = None
+
+    if db_path is None:
+        _spawn_write_unlocked(episode_ids)
+        return
+
+    def _do_spawn(ids: list[int]) -> int:
+        payload = json.dumps({"episode_ids": ids}).encode()
+        p = subprocess.Popen(
+            [sys.executable, "-m", "scripts.write.run"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+        if p.stdin:
+            p.stdin.write(payload)
+            p.stdin.close()
+        return p.pid
+
+    try:
+        acquire_and_spawn(db_path, list(episode_ids), spawn_fn=_do_spawn)
+    except Exception:
+        # fail-open: lock 取得失敗でも raw 保存は完了済み
+        pass
+
+
+def _spawn_write_unlocked(episode_ids: list[int]) -> None:
+    """lock 経路が使えない時の fallback (旧挙動と同等)."""
     payload = json.dumps({"episode_ids": episode_ids}).encode()
     try:
         p = subprocess.Popen(
@@ -26,12 +67,10 @@ def spawn_write(episode_ids: list[int]) -> None:
             start_new_session=True,
             close_fds=True,
         )
-        # write payload then close stdin to release the child immediately
         if p.stdin:
             p.stdin.write(payload)
             p.stdin.close()
     except Exception:
-        # fail-open: 子プロセス起動失敗でも本処理 (raw 保存) は完了済み
         pass
 
 
