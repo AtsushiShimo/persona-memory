@@ -1,4 +1,13 @@
-"""scripts.db_cozo.backfill_graph + graph_extract のテスト."""
+"""scripts.db_cozo.backfill_graph + graph_extract のテスト.
+
+設計境界:
+- 本ファイルは backfill_one / backfill (orchestrator) の責務 (= graph_extract →
+  add_node → add_edge の連鎖 + episode.topic_id 上書き) を検証する.
+- identify_topic は別責務 (= 0.7.3 の話題箱方式) なので、 ここでは test double
+  に差し替えて固定挙動にする (= 依存の境界を明示). identify_topic 経路自体は
+  別ファイル (tests/test_db_cozo_topic_*.py) + 統合 e2e
+  (tests/test_db_cozo_backfill_graph_e2e.py) で検証する.
+"""
 from __future__ import annotations
 
 import json
@@ -14,6 +23,7 @@ from scripts.db_cozo.graph_extract import (
     extract_node_with_relation, parse_node,
 )
 from scripts.db_cozo.repo import ensure_topic, save_episode, set_active_topic
+from scripts.db_cozo.topic_identify import IdentifyResult
 
 
 @dataclass
@@ -32,6 +42,36 @@ class FakeGraphClient:
 
     def embed(self, model, text):
         return list(self.embed_vec)
+
+
+def _stub_identify_topic_factory(forced_topic_id: str | None = None):
+    """identify_topic の test double を作る.
+
+    forced_topic_id を指定すればその topic_id を返す. 指定なしなら session_id を
+    返す (= 旧 session_id 救済と同等のシンプルな振る舞いで, backfill_one の
+    本体経路を孤立させて検証するための境界).
+    """
+    def _stub(client, role, content, session_id, llm, alive_hours=None,
+              top_k=None, distance_max=None, embed_model=None):
+        tid = forced_topic_id or session_id
+        ensure_topic(client, tid)
+        return IdentifyResult(
+            topic_id=tid, is_new=False, matched_distance=None, summary="",
+        )
+    return _stub
+
+
+@pytest.fixture(autouse=True)
+def _patch_identify_topic(monkeypatch):
+    """各テストで identify_topic を session_id 返しの stub に差し替える.
+
+    backfill_one が import 経路 `scripts.db_cozo.backfill_graph.identify_topic`
+    で参照しているため、 module 名前空間で差し替える.
+    """
+    monkeypatch.setattr(
+        "scripts.db_cozo.backfill_graph.identify_topic",
+        _stub_identify_topic_factory(),
+    )
 
 
 # ── parse_node ──
