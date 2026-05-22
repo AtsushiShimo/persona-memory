@@ -174,7 +174,8 @@
 
 ### 7.1 トグル
 
-- 環境変数 `PERSONA_MEMORY_DEBUG=1` (or レベル指定 `a|b|c`)
+- 環境変数 `PERSONA_RECALL_LOG_LEVEL=1` (or レベル指定 `a|b|c`).
+  0.8.9 で `PERSONA_MEMORY_DEBUG` から rename (同名で別責務 = debug mode との衝突解消).
 - ON 中は毎 recall で毎回出す
 
 ### 7.2 粒度 (default = c)
@@ -415,7 +416,7 @@ user 発話 + assistant 応答の **両方** が write 対象。発火 hook が�
 5. **recall LLM**: LLM インターセプト方式、`BUFFER_N=3`、facts active のみ default
 6. **boot 層**: SessionStart 全件注入 + UserPromptSubmit での dirty 再注入 (§8.1)
 7. **エスカレーション**: 3 OR 条件 + `claude -p` 子プロセス + 再帰防止ガード
-8. **デバッグモード**: `PERSONA_MEMORY_DEBUG`、default レベル c
+8. **recall ログ**: `PERSONA_RECALL_LOG_LEVEL`、default レベル c (0.8.9 で `PERSONA_MEMORY_DEBUG` から rename)
 9. **未処理 episode 再抽出**: SessionStart で前回分を検出して detach 起動
 10. **重み付け recall**: `relevance × recency × importance × access_count` (実装時のヒューリスティックで調整)
 11. **hook 5 種**: SessionStart / UserPromptSubmit / Stop / PreCompact / SessionEnd
@@ -460,7 +461,7 @@ persona-memory/
 │   ├── recall/             # recall LLM 経路 (キーワード抽出 / 検索 / 注入)
 │   ├── secrets/            # 機密フィルタ (regex / エントロピー / Keychain ガイダンス)
 │   ├── escalate/           # claude -p 呼び出しラッパ
-│   ├── debug/              # PERSONA_MEMORY_DEBUG ログ
+│   ├── debug/              # PERSONA_RECALL_LOG_LEVEL ログ + debug mode flag
 │   └── shared/             # 共通ユーティリティ (env, ollama client, etc)
 ├── data/                   # DB ファイル (gitignore 維持)
 ├── docs/

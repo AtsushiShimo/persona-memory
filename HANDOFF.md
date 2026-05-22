@@ -34,7 +34,8 @@
 | **boot 層** | SessionStart で persona / rule の active facts を全件注入 (playbook_* は除外) | `scripts/boot/inject.py`, `defaults.py` |
 | **エスカレーション** | 長文 / 不確実 / 高 importance で claude -p 子プロセスに丸投げ | `scripts/escalate/claude_p.py` |
 | **機密フィルタ** | 両 hook 入口で API キー等を検出して block | `scripts/secrets/detect.py` |
-| **デバッグモード** | `PERSONA_MEMORY_DEBUG=c` で recall パイプラインを全段ログ | `scripts/debug/recall_log.py` |
+| **recall ログ** | `PERSONA_RECALL_LOG_LEVEL=c` で recall パイプラインを全段ログ (0.8.9 で env rename) | `scripts/debug/recall_log.py` |
+| **デバッグモード** | flag (set_debug_mode 経由) で DB block を一時的に外す | `scripts/debug/mode.py`, `set_debug_mode` MCP |
 | **health check** | DB / 設定 / Ollama / 直近 ingest 健全性を 1 関数で集計 | `scripts/health.py` |
 | **未処理 episode 再抽出** | SessionStart で write が詰まった episode を再開 | `scripts/hooks/on_session_start.py` (0.8.0 で `scripts/resume.py` から移管) |
 | **lint の recall 接続** | source='lint_conflict' な supersede の旧 value を「過去には〜と言っていたが撤回済」 として補足表示 | `scripts/db_cozo/recall_full.py`, `scripts/recall/summarize.py` |
@@ -304,7 +305,7 @@ persona-memory/
 | 包括ヘルスチェック | `python -m scripts.health` (env `PERSONA_MEMORY_DB=path/to.db`) |
 | facts 一覧 | `sqlite3 X.db "SELECT id, category, key, status, substr(value,1,60) FROM facts ORDER BY id"` |
 | write LLM の挙動を直接観察 | `python -c "from scripts.write.extract import extract_facts; ..."` (test10 で実証済の手法) |
-| recall debug log | `PERSONA_MEMORY_DEBUG=c` を hook 起動環境に渡す |
+| recall debug log | `PERSONA_RECALL_LOG_LEVEL=c` を hook 起動環境に渡す (0.8.9 で rename) |
 
 ---
 

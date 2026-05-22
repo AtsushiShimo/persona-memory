@@ -247,8 +247,8 @@ cat <<EOF
    claude     # Claude Code をこのディレクトリで起動
 
  SessionStart で boot 層 (persona facts) が自動注入されます。
- デバッグログを見たい場合は:
-   export PERSONA_MEMORY_DEBUG=c  # recall ログレベル (最詳細). 0.8.8 以降 DB block は外れません.
+ recall パイプラインのデバッグログを見たい場合:
+   export PERSONA_RECALL_LOG_LEVEL=c  # 最詳細 (a/b/c の 3 段階)
 
  DB block を一時的に外したい場合 (= debug mode):
    ペルソナに『デバッグモード on にして』 と発話してください.

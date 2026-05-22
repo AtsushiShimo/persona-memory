@@ -1,12 +1,17 @@
 """recall デバッグログ (§7).
 
-PERSONA_MEMORY_DEBUG = ""/"0"  → 完全 OFF
-                    = "1"/"c"  → level c (最詳細、default)
-                    = "a"      → keywords のみ
-                    = "b"      → keywords + hits
+PERSONA_RECALL_LOG_LEVEL = ""/"0"/"false"/"off"  → 完全 OFF
+                        = "1"/"true"/"on"/"c"  → level c (最詳細、default)
+                        = "a"                  → keywords のみ
+                        = "b"                  → keywords + hits
 
 出力先: stderr + ログファイル (data/debug-recall.log) 併用。
 **additionalContext には入れない** (Claude 本体への注入文を汚さない).
+
+0.8.9 rename: 旧名 PERSONA_MEMORY_DEBUG は同名で debug mode の責務 A (DB
+block skip) を 0.8.8 まで持っていた. 名前空間衝突を解消するため本 module の
+責務 B (= recall ログレベル) を PERSONA_RECALL_LOG_LEVEL に rename. 旧名は
+読まない (= 後方互換無し, design_drift_zero_tolerance).
 """
 from __future__ import annotations
 
@@ -23,7 +28,7 @@ _LEVEL_RANK = {"a": 1, "b": 2, "c": 3}
 
 
 def _resolve_level() -> int:
-    raw = os.environ.get("PERSONA_MEMORY_DEBUG", "").strip().lower()
+    raw = os.environ.get("PERSONA_RECALL_LOG_LEVEL", "").strip().lower()
     if raw in ("", "0", "false", "off"):
         return 0
     if raw in ("1", "true", "on"):
